@@ -200,6 +200,8 @@ def inject_style():
     [class*="st-key-match_card_"] [data-testid="column"]:nth-child(2){flex:0 0 48px!important}
     .survivor-required{margin-top:16px;padding:14px;border:1px solid #b8e7ce;border-radius:16px;background:linear-gradient(90deg,#effcf5,#f8fffb)}
     .survivor-required h4{margin:0 0 3px;color:#075f43}.survivor-required p{margin:0;color:#476357;font-size:.82rem}
+
+    .pred{display:inline-block;min-width:48px;padding:5px 8px;border-radius:9px;font-weight:900;white-space:nowrap}.pred.exact{background:#d9fbe8;color:#087443;border:1px solid #83ddb0}.pred.winner{background:#fff4c7;color:#785900;border:1px solid #e8cf62}.pred.wrong{background:#f3f4f6;color:#475467;border:1px solid #d0d5dd}.pred.pending{background:#eef2f6;color:#667085;border:1px solid #d7dee7}.official-score{font-size:.67rem;font-weight:700;color:#d9e5f2;white-space:nowrap}.prediction-legend{display:flex;gap:7px;flex-wrap:wrap;margin:10px 0}.prediction-legend .pred{font-size:.74rem;min-width:0}.survivor-eliminated{margin-top:16px;padding:14px;border:1px solid #efb7b7;border-radius:16px;background:#fff3f3}.survivor-eliminated h4{margin:0 0 3px;color:#9b1c1c}.survivor-eliminated p{margin:0;color:#6b3131;font-size:.82rem}.pro-table th{min-width:118px}.pro-table th:first-child{min-width:220px}.pro-table th:last-child{min-width:125px}
     @media(max-width:640px){.player-cell{min-width:190px;gap:8px}.mini-logo{width:48px;height:48px;min-width:48px}.pro-table td{padding:8px 7px}.block-container{padding-left:.55rem;padding-right:.55rem}.hero{grid-template-columns:auto 1fr;padding:13px}.hero .league-logo{width:58px;height:46px}.hero .ball{display:none}.hero h1{font-size:1.35rem}.team-name{font-size:.75rem}.profile-card img{width:76px;height:76px}[data-testid="stNumberInput"] input{font-size:1.15rem}.stTabs [data-baseweb="tab"]{font-size:.73rem;padding-left:7px;padding-right:7px}}
     </style>
     """, unsafe_allow_html=True)
@@ -352,6 +354,8 @@ def render_pro_table(df, title, rank_col="POS", team_by_player=True, qualifier_t
 def round_submission_status(round_id):
     with conn() as c:
         total_matches = c.execute("SELECT COUNT(*) FROM matches WHERE round_id=?", (round_id,)).fetchone()[0]
+        round_info = c.execute("SELECT number,reveal_override FROM rounds WHERE id=?", (round_id,)).fetchone()
+        round_number = round_info["number"]
         users = c.execute("SELECT id,name FROM users WHERE is_admin=0 ORDER BY name").fetchall()
         counts = {row["user_id"]: row["n"] for row in c.execute("""
             SELECT p.user_id, COUNT(*) n FROM predictions p
@@ -360,22 +364,40 @@ def round_submission_status(round_id):
         survivor_users = {row["user_id"] for row in c.execute(
             "SELECT user_id FROM survivor_picks WHERE round_id=?", (round_id,)
         ).fetchall()}
-        round_row = c.execute("SELECT reveal_override FROM rounds WHERE id=?", (round_id,)).fetchone()
-        override = bool(round_row and round_row["reveal_override"])
+        override = bool(round_info and round_info["reveal_override"])
+        alive_before = {u["id"]: _survivor_lives_before_round(c, u["id"], round_number) > 0 for u in users}
     rows = []
     for user in users:
         captured = counts.get(user["id"], 0)
-        survivor_ok = user["id"] in survivor_users
+        survivor_ok = user["id"] in survivor_users or not alive_before[user["id"]]
+        survivor_label = "Eliminado" if not alive_before[user["id"]] else ("Listo" if user["id"] in survivor_users else "Pendiente")
         ready = captured == total_matches and survivor_ok
         rows.append({
             "JUGADOR": user["name"],
             "CAPTURADOS": captured,
             "TOTAL": total_matches,
-            "SURVIVOR": "Listo" if survivor_ok else "Pendiente",
+            "SURVIVOR": survivor_label,
             "ESTADO": "Listo" if ready else "Pendiente",
         })
     complete = bool(total_matches and all(row["ESTADO"] == "Listo" for row in rows))
     return rows, complete, override
+
+
+def _prediction_cell(prediction, match):
+    if not prediction:
+        return '<span class="pred pending">—</span>'
+    ph, pa = prediction
+    text = f"{ph}-{pa}"
+    if match["home_score"] is None or match["away_score"] is None:
+        return f'<span class="pred pending">{text}</span>'
+    oh, oa = match["home_score"], match["away_score"]
+    if (ph, pa) == (oh, oa):
+        return f'<span class="pred exact" title="Marcador exacto">{text}</span>'
+    pred_result = (ph > pa) - (ph < pa)
+    official_result = (oh > oa) - (oh < oa)
+    if pred_result == official_result:
+        return f'<span class="pred winner" title="Acierto de resultado">{text}</span>'
+    return f'<span class="pred wrong">{text}</span>'
 
 
 def public_predictions(round_id):
@@ -391,27 +413,42 @@ def public_predictions(round_id):
         return
     with conn() as c:
         matches = c.execute("SELECT * FROM matches WHERE round_id=? ORDER BY kickoff", (round_id,)).fetchall()
-        users = c.execute("SELECT id,name FROM users WHERE is_admin=0 ORDER BY name").fetchall()
+        round_row = c.execute("SELECT number FROM rounds WHERE id=?", (round_id,)).fetchone()
+        users = c.execute("SELECT id,name FROM users WHERE is_admin=0 ORDER BY CASE WHEN name='Joan Santos' THEN 0 ELSE 1 END,name").fetchall()
         predictions = c.execute("""
             SELECT p.user_id,p.match_id,p.home_score,p.away_score FROM predictions p
             JOIN matches m ON m.id=p.match_id WHERE m.round_id=?
         """, (round_id,)).fetchall()
+        survivor_round = {row["user_id"]: row["team"] for row in c.execute(
+            "SELECT user_id,team FROM survivor_picks WHERE round_id=?", (round_id,)
+        ).fetchall()}
+        current_lives = {u["id"]: _survivor_lives_before_round(c, u["id"], None) for u in users}
     lookup = {(p["user_id"], p["match_id"]):(p["home_score"],p["away_score"]) for p in predictions}
+    headers = []
+    for match in matches:
+        home = TEAM_SHORT.get(match["home_team"], match["home_team"])
+        away = TEAM_SHORT.get(match["away_team"], match["away_team"])
+        official = "Pendiente" if match["home_score"] is None else f'{match["home_score"]}-{match["away_score"]}'
+        headers.append((match, f'{home} vs {away}<br><small class="official-score">Oficial: {official}</small>'))
     rows = []
     for user in users:
         row = {"PARTICIPANTE":user["name"]}
-        for i, match in enumerate(matches, 1):
-            score = lookup.get((user["id"], match["id"]))
-            row[f"P{i}"] = f"{score[0]}-{score[1]}" if score else "—"
+        for match, header in headers:
+            row[header] = _prediction_cell(lookup.get((user["id"], match["id"])), match)
+        pick = survivor_round.get(user["id"])
+        lives = current_lives[user["id"]]
+        if pick:
+            state = "☠️ Eliminado" if lives <= 0 else f"❤️ {lives:g} vidas"
+            row["SURVIVOR"] = f'<b>{TEAM_SHORT.get(pick,pick)}</b><br><small>{state}</small>'
+        elif lives <= 0:
+            row["SURVIVOR"] = '<b>Sin elección</b><br><small>☠️ Eliminado</small>'
+        else:
+            row["SURVIVOR"] = '<span class="pred pending">—</span>'
         rows.append(row)
-    if complete:
-        message = "✅ Todos terminaron. Los pronósticos ya son visibles para el grupo."
-    else:
-        message = "🔓 Publicación autorizada por el administrador. Los jugadores pendientes aparecen con guiones."
+    message = "✅ Todos terminaron. Los pronósticos ya son visibles para el grupo." if complete else "🔓 Publicación autorizada por el administrador. Los jugadores pendientes aparecen con guiones."
     st.markdown(f'<div class="privacy-open">{message}</div>', unsafe_allow_html=True)
-    render_pro_table(pd.DataFrame(rows), "Pronósticos del grupo", rank_col="", team_by_player=True)
-    with st.expander("Ver qué partido corresponde a P1, P2, P3…"):
-        render_pro_table(pd.DataFrame([{ "PARTIDO":f"P{i}", "ENCUENTRO":f"{TEAM_SHORT.get(m['home_team'],m['home_team'])} vs {TEAM_SHORT.get(m['away_team'],m['away_team'])}"} for i,m in enumerate(matches,1)]), "Clave de partidos", rank_col="", team_by_player=False)
+    st.markdown('<div class="prediction-legend"><span class="pred exact">Exacto · 2 pts</span><span class="pred winner">Ganador/empate · 1 pt</span><span class="pred wrong">Sin puntos</span><span class="pred pending">Pendiente</span></div>', unsafe_allow_html=True)
+    render_pro_table(pd.DataFrame(rows), f'Pronósticos del grupo · Jornada {round_row["number"]}', rank_col="", team_by_player=True)
 
 
 def login():
@@ -524,6 +561,38 @@ def duel_standings(add_position=True):
     return df
 
 
+def _survivor_lives_before_round(c, user_id, round_number=None):
+    """Calcula las vidas usando únicamente jornadas anteriores a la indicada."""
+    params = [user_id]
+    round_filter = ""
+    if round_number is not None:
+        round_filter = " AND r.number < ?"
+        params.append(round_number)
+    rows = c.execute(f"""SELECT sp.team,m.home_team,m.away_team,m.home_score,m.away_score
+                          FROM survivor_picks sp
+                          JOIN rounds r ON r.id=sp.round_id
+                          LEFT JOIN matches m ON m.round_id=r.id
+                            AND (m.home_team=sp.team OR m.away_team=sp.team)
+                          WHERE sp.user_id=? {round_filter}
+                          ORDER BY r.number""", params).fetchall()
+    lives = 3.0
+    for row in rows:
+        if row["home_score"] is None or row["away_score"] is None:
+            continue
+        gf = row["home_score"] if row["team"] == row["home_team"] else row["away_score"]
+        ga = row["away_score"] if row["team"] == row["home_team"] else row["home_score"]
+        if gf < ga:
+            lives -= 1
+        elif gf == ga:
+            lives -= 0.5
+    return max(0.0, lives)
+
+
+def survivor_lives(user_id, round_number=None):
+    with conn() as c:
+        return _survivor_lives_before_round(c, user_id, round_number)
+
+
 def survivor_status():
     with conn() as c:
         users=c.execute("SELECT id,name,team FROM users WHERE is_admin=0").fetchall()
@@ -542,14 +611,18 @@ def survivor_status():
 
 
 def survivor_form_selection(user, round_row, locked, key_prefix="combined"):
-    """Selector Survivor para enviarse junto con los pronósticos."""
+    """Selector Survivor. Los eliminados pueden enviar pronósticos sin elegir equipo."""
     with conn() as c:
         used=[x["team"] for x in c.execute("SELECT team FROM survivor_picks WHERE user_id=?",(user["id"],))]
         old=c.execute("SELECT team FROM survivor_picks WHERE user_id=? AND round_id=?",(user["id"],round_row["id"])).fetchone()
         matches=c.execute("SELECT home_team,away_team FROM matches WHERE round_id=?",(round_row["id"],)).fetchall()
+        lives_before = _survivor_lives_before_round(c, user["id"], round_row["number"])
+    if lives_before <= 0 and not old:
+        st.markdown('<div class="survivor-eliminated"><h4>☠️ Survivor finalizado</h4><p>Ya perdiste tus 3 vidas. Puedes seguir enviando tus pronósticos, pero ya no debes elegir equipo Survivor.</p></div>', unsafe_allow_html=True)
+        return "__ELIMINATED__"
     teams=sorted({t for match in matches for t in (match["home_team"],match["away_team"])})
     available=[t for t in teams if t not in used or (old and t==old["team"])]
-    st.markdown('<div class="survivor-required"><h4>Selección Survivor obligatoria</h4><p>Debes elegir un equipo para poder enviar toda la jornada. No podrás repetirlo en jornadas posteriores.</p></div>', unsafe_allow_html=True)
+    st.markdown(f'<div class="survivor-required"><h4>Selección Survivor obligatoria</h4><p>Vidas disponibles antes de esta jornada: <b>{lives_before:g}</b>. No podrás repetir equipo.</p></div>', unsafe_allow_html=True)
     if not available:
         st.error("No tienes equipos disponibles para Survivor en esta jornada.")
         return None
@@ -651,7 +724,7 @@ def player_view(user):
             survivor_choice=survivor_form_selection(user,round_row,locked,key_prefix=f"j{round_row['number']}")
             submitted=st.form_submit_button("Enviar pronósticos y Survivor",type="primary",disabled=locked,use_container_width=True)
         if submitted:
-            if not survivor_choice:
+            if survivor_choice is None:
                 st.error("Debes seleccionar tu equipo Survivor antes de enviar la jornada.")
             else:
                 try:
@@ -660,9 +733,10 @@ def player_view(user):
                         c.executemany("""INSERT INTO predictions(user_id,match_id,home_score,away_score,submitted_at) VALUES(?,?,?,?,?)
                             ON CONFLICT(user_id,match_id) DO UPDATE SET home_score=excluded.home_score,away_score=excluded.away_score,submitted_at=excluded.submitted_at""",
                             [(user["id"],mid,h,a,stamp) for mid,h,a in values])
-                        c.execute("""INSERT INTO survivor_picks(user_id,round_id,team,submitted_at) VALUES(?,?,?,?)
-                            ON CONFLICT(user_id,round_id) DO UPDATE SET team=excluded.team,submitted_at=excluded.submitted_at""",
-                            (user["id"],round_row["id"],survivor_choice,stamp))
+                        if survivor_choice != "__ELIMINATED__":
+                            c.execute("""INSERT INTO survivor_picks(user_id,round_id,team,submitted_at) VALUES(?,?,?,?)
+                                ON CONFLICT(user_id,round_id) DO UPDATE SET team=excluded.team,submitted_at=excluded.submitted_at""",
+                                (user["id"],round_row["id"],survivor_choice,stamp))
                     run_write(save)
                     st.success("Jornada enviada correctamente.")
                 except sqlite3.IntegrityError:
@@ -754,7 +828,7 @@ def admin_view():
                     c.executemany("""INSERT INTO predictions(user_id,match_id,home_score,away_score,submitted_at) VALUES(?,?,?,?,?)
                         ON CONFLICT(user_id,match_id) DO UPDATE SET home_score=excluded.home_score,away_score=excluded.away_score,submitted_at=excluded.submitted_at""",
                         [(selected_user["id"],mid,h,a,stamp) for mid,h,a in values])
-                    if survivor_choice:
+                    if survivor_choice and survivor_choice != "__ELIMINATED__":
                         c.execute("""INSERT INTO survivor_picks(user_id,round_id,team,submitted_at) VALUES(?,?,?,?)
                             ON CONFLICT(user_id,round_id) DO UPDATE SET team=excluded.team,submitted_at=excluded.submitted_at""",
                             (selected_user["id"],round_row["id"],survivor_choice,stamp))
