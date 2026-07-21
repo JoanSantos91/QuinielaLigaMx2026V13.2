@@ -201,7 +201,15 @@ def inject_style():
     .survivor-required{margin-top:16px;padding:14px;border:1px solid #b8e7ce;border-radius:16px;background:linear-gradient(90deg,#effcf5,#f8fffb)}
     .survivor-required h4{margin:0 0 3px;color:#075f43}.survivor-required p{margin:0;color:#476357;font-size:.82rem}
 
-    .pred{display:inline-block;min-width:48px;padding:5px 8px;border-radius:9px;font-weight:900;white-space:nowrap}.pred.exact{background:#d9fbe8;color:#087443;border:1px solid #83ddb0}.pred.winner{background:#fff4c7;color:#785900;border:1px solid #e8cf62}.pred.wrong{background:#f3f4f6;color:#475467;border:1px solid #d0d5dd}.pred.pending{background:#eef2f6;color:#667085;border:1px solid #d7dee7}.official-score{font-size:.67rem;font-weight:700;color:#d9e5f2;white-space:nowrap}.prediction-legend{display:flex;gap:7px;flex-wrap:wrap;margin:10px 0}.prediction-legend .pred{font-size:.74rem;min-width:0}.survivor-eliminated{margin-top:16px;padding:14px;border:1px solid #efb7b7;border-radius:16px;background:#fff3f3}.survivor-eliminated h4{margin:0 0 3px;color:#9b1c1c}.survivor-eliminated p{margin:0;color:#6b3131;font-size:.82rem}.pro-table th{min-width:118px}.pro-table th:first-child{min-width:220px}.pro-table th:last-child{min-width:125px}
+    .pred{display:inline-block;min-width:48px;padding:5px 8px;border-radius:9px;font-weight:900;white-space:nowrap}.pred.exact{background:#d9fbe8;color:#087443;border:1px solid #83ddb0}.pred.winner{background:#fff4c7;color:#785900;border:1px solid #e8cf62}.pred.wrong{background:#f3f4f6;color:#475467;border:1px solid #d0d5dd}.pred.pending{background:#eef2f6;color:#667085;border:1px solid #d7dee7}.official-score{font-size:.67rem;font-weight:700;color:#d9e5f2;white-space:nowrap}.prediction-legend{display:flex;gap:7px;flex-wrap:wrap;margin:10px 0}.prediction-legend .pred{font-size:.74rem;min-width:0}.survivor-eliminated{margin-top:16px;padding:14px;border:1px solid #efb7b7;border-radius:16px;background:#fff3f3}.survivor-eliminated h4{margin:0 0 3px;color:#9b1c1c}.survivor-eliminated p{margin:0;color:#6b3131;font-size:.82rem}
+    .pro-table{table-layout:auto;width:max-content;min-width:100%}
+    .pro-table th,.pro-table td{white-space:nowrap}
+    .pro-table .col-pos,.pro-table .col-pts,.pro-table .col-jg,.pro-table .col-je,.pro-table .col-jp,.pro-table .col-gf,.pro-table .col-gc,.pro-table .col-dif,.pro-table .col-vidas,.pro-table .col-elecciones{width:1%;min-width:48px;max-width:72px;padding-left:7px;padding-right:7px}
+    .pro-table .col-pos{min-width:44px;max-width:55px}
+    .pro-table .col-jugador,.pro-table .col-participante{min-width:220px}
+    .pro-table .col-equipo{min-width:95px;max-width:135px}
+    .pro-table .col-estado,.pro-table .col-survivor{min-width:90px;max-width:125px}
+    .pro-table .col-capturados,.pro-table .col-total{min-width:78px;max-width:95px}
     @media(max-width:640px){.player-cell{min-width:190px;gap:8px}.mini-logo{width:48px;height:48px;min-width:48px}.pro-table td{padding:8px 7px}.block-container{padding-left:.55rem;padding-right:.55rem}.hero{grid-template-columns:auto 1fr;padding:13px}.hero .league-logo{width:58px;height:46px}.hero .ball{display:none}.hero h1{font-size:1.35rem}.team-name{font-size:.75rem}.profile-card img{width:76px;height:76px}[data-testid="stNumberInput"] input{font-size:1.15rem}.stTabs [data-baseweb="tab"]{font-size:.73rem;padding-left:7px;padding-right:7px}}
     </style>
     """, unsafe_allow_html=True)
@@ -305,8 +313,9 @@ def standings():
     df["DUELO_PTS"] = df["JUGADOR"].map(duel["PTS"] if not duel.empty else {}).fillna(0)
     df["DUELO_DIF"] = df["JUGADOR"].map(duel["DIF"] if not duel.empty else {}).fillna(0)
     df["DUELO_GF"] = df["JUGADOR"].map(duel["GF"] if not duel.empty else {}).fillna(0)
+    df["DUELO_GC"] = df["JUGADOR"].map(duel["GC"] if not duel.empty else {}).fillna(0)
     journeys = sorted([x for x in df.columns if x.startswith("J") and x[1:].isdigit()], key=lambda x: int(x[1:]))
-    df = df[["USER_ID","JUGADOR","EQUIPO","TOTAL","EXACTOS","ACIERTOS","DUELO_PTS","DUELO_DIF","DUELO_GF"] + journeys]
+    df = df[["USER_ID","JUGADOR","EQUIPO","TOTAL","EXACTOS","ACIERTOS","DUELO_PTS","DUELO_DIF","DUELO_GF","DUELO_GC"] + journeys]
     df = df.sort_values(["TOTAL","DUELO_PTS","DUELO_DIF","DUELO_GF","EXACTOS","ACIERTOS","JUGADOR"], ascending=[False,False,False,False,False,False,True]).reset_index(drop=True)
     df.insert(0, "POS", range(1, len(df)+1))
     return df
@@ -321,10 +330,13 @@ def render_rank_table(df, title="Tabla general"):
         pos=int(r["POS"]); cls="top1" if pos==1 else "top2" if pos==2 else "top3" if pos==3 else ("alt" if pos%2==0 else "base")
         if pos <= 8: cls += " qualifier"
         points=int(r["TOTAL"] if "TOTAL" in r else r.get("PTS",0))
+        gf=int(r.get("DUELO_GF", r.get("GF",0)))
+        gc=int(r.get("DUELO_GC", r.get("GC",0)))
+        dif=int(r.get("DUELO_DIF", r.get("DIF",gf-gc)))
         extra = f'<span class="tie-info">Exactos: {int(r.get("EXACTOS",0))}</span>' if "EXACTOS" in r else ""
-        rows.append(f'<tr class="{cls}"><td>{pos}</td><td><div class="club-cell"><img src="{logo}" alt="{team_full}"><span>{r["JUGADOR"]}<br><small style="color:#667085;font-weight:600">{TEAM_SHORT.get(team_full,team_full)} {extra}</small></span></div></td><td class="pts">{points}</td></tr>')
-    legend='<div class="table-legend"><span><i class="legend-bar"></i>Top 8: clasifica a elección de campeón</span><span>Desempate: puntos de duelos, diferencia, GF y exactos</span></div>' if title.lower().startswith("tabla general") else ''
-    html=f'<div class="table-title"><h3>{title}</h3><span class="table-pill">Actualizada en tiempo real</span></div>{legend}<table class="rank-table"><thead><tr><th>Pos.</th><th>Participante</th><th>Puntos</th></tr></thead><tbody>{"".join(rows)}</tbody></table>'
+        rows.append(f'<tr class="{cls}"><td>{pos}</td><td><div class="club-cell"><img src="{logo}" alt="{team_full}"><span>{r["JUGADOR"]}<br><small style="color:#667085;font-weight:600">{TEAM_SHORT.get(team_full,team_full)} {extra}</small></span></div></td><td class="pts">{points}</td><td>{gf}</td><td>{gc}</td><td>{dif:+d}</td></tr>')
+    legend='<div class="table-legend"><span><i class="legend-bar"></i>Top 8: clasifica a elección de campeón</span><span>Desempate: puntos, DIF, GF y exactos</span></div>' if title.lower().startswith("tabla general") else ''
+    html=f'<div class="table-title"><h3>{title}</h3><span class="table-pill">Actualizada en tiempo real</span></div>{legend}<div class="pro-table-wrap"><table class="rank-table"><thead><tr><th>Pos.</th><th>Participante</th><th>Puntos</th><th>GF</th><th>GC</th><th>DIF</th></tr></thead><tbody>{"".join(rows)}</tbody></table></div>'
     st.markdown(html,unsafe_allow_html=True)
 
 
@@ -333,7 +345,10 @@ def render_pro_table(df, title, rank_col="POS", team_by_player=True, qualifier_t
         st.info("Todavía no hay información disponible."); return
     visible=df.copy()
     cols=list(visible.columns)
-    headers=''.join(f'<th>{c}</th>' for c in cols)
+    def col_class(col):
+        safe = "".join(ch.lower() if ch.isalnum() else "-" for ch in str(col)).strip("-")
+        return f"col-{safe}"
+    headers=''.join(f'<th class="{col_class(c)}">{c}</th>' for c in cols)
     body=[]
     for idx,row in visible.iterrows():
         pos=int(row[rank_col]) if rank_col in row and str(row[rank_col]).replace('.0','').isdigit() else None
@@ -347,7 +362,7 @@ def render_pro_table(df, title, rank_col="POS", team_by_player=True, qualifier_t
                 if team:
                     logo=_data_uri(team_logo(team)); val=f'<div class="player-cell"><img class="mini-logo" src="{logo}" alt="{team}"><b>{val}</b></div>'
             if isinstance(val,float): val=f'{val:g}'
-            cells.append(f'<td>{val}</td>')
+            cells.append(f'<td class="{col_class(col)}">{val}</td>')
         body.append(f'<tr class="{cls}">{"".join(cells)}</tr>')
     st.markdown(f'<div class="table-title"><h3>{title}</h3></div><div class="pro-table-wrap"><table class="pro-table"><thead><tr>{headers}</tr></thead><tbody>{"".join(body)}</tbody></table></div>',unsafe_allow_html=True)
 
@@ -914,4 +929,3 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
