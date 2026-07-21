@@ -184,14 +184,18 @@ def inject_style():
     .privacy-lock{background:#fff5fb;border:1px solid #efb9d7;border-radius:14px;padding:12px;color:#8b1455}.privacy-open{background:#edfdf4;border:1px solid #b6e9ca;border-radius:14px;padding:12px;color:#0b6b3e;font-weight:750}
     .table-title{display:flex;align-items:center;justify-content:space-between;margin:.3rem 0 .8rem}.table-title h3{margin:0}.table-pill{background:var(--mx-navy);color:#fff;padding:5px 10px;border-radius:999px;font-size:.75rem;font-weight:800}
     .rank-table{width:100%;border-collapse:separate;border-spacing:0 7px}.rank-table th{padding:7px 10px;color:#667085;font-size:.74rem;text-transform:uppercase;text-align:left}.rank-table td{padding:10px;background:#fff;border-top:1px solid #e2e8f0;border-bottom:1px solid #e2e8f0}.rank-table td:first-child{border-left:4px solid var(--mx-green);border-radius:12px 0 0 12px;text-align:center;font-weight:950;width:52px}.rank-table td:last-child{border-right:1px solid #e2e8f0;border-radius:0 12px 12px 0}.rank-table tr.top1 td{background:linear-gradient(90deg,#2f741e,#3f8b29);color:#fff;border-color:#28651a}.rank-table tr.top1 small{color:#e8f7df!important}.rank-table tr.top2 td{background:linear-gradient(90deg,#1763a4,#2776b9);color:#fff;border-color:#15568e}.rank-table tr.top2 small{color:#e2f2ff!important}.rank-table tr.top3 td{background:linear-gradient(90deg,#4a86df,#5a97ec);color:#fff;border-color:#3c76c8}.rank-table tr.top3 small{color:#edf5ff!important}.rank-table tr.alt td{background:#f0f3f6}.rank-table tr.base td{background:#fff}.rank-table tr.qualifier td:first-child{border-left:7px solid #11a8ff}.rank-table tr.top1 .pts,.rank-table tr.top2 .pts,.rank-table tr.top3 .pts{color:#fff}.club-cell{display:flex;align-items:center;gap:10px;font-weight:850}.club-cell img{width:52px;height:52px;object-fit:contain}.pts{font-size:1.05rem;font-weight:950;color:var(--mx-navy)}
-    .rank-table{table-layout:fixed;min-width:570px}
-    .rank-table .rank-pos{width:54px;text-align:center}
-    .rank-table .rank-participant{width:250px;text-align:left}
-    .rank-table .rank-number{width:66px;text-align:center!important;vertical-align:middle;font-variant-numeric:tabular-nums}
-    .rank-table .club-cell{min-width:0;width:100%}
-    .rank-table .participant-text{display:flex;flex-direction:column;min-width:0;line-height:1.15}
-    .rank-table .participant-name{display:block;white-space:normal;overflow-wrap:anywhere;word-break:normal;line-height:1.15}
-    .rank-table .participant-text small{display:block;margin-top:4px;white-space:normal;line-height:1.2}
+    .rank-table{table-layout:fixed;width:100%;min-width:560px}
+    .rank-table th,.rank-table td{box-sizing:border-box}
+    .rank-table th{white-space:nowrap;text-align:center;padding-left:5px;padding-right:5px}
+    .rank-table th:nth-child(2){text-align:left}
+    .rank-table .rank-pos{width:48px;text-align:center}
+    .rank-table .rank-participant{width:auto;text-align:left;padding-left:8px;padding-right:8px}
+    .rank-table .rank-number{width:52px;text-align:center!important;vertical-align:middle;font-variant-numeric:tabular-nums;padding-left:4px;padding-right:4px}
+    .rank-table .club-cell{display:grid;grid-template-columns:42px minmax(0,1fr);align-items:center;gap:8px;min-width:0;width:100%}
+    .rank-table .club-cell img{width:42px;height:42px;min-width:42px;object-fit:contain}
+    .rank-table .participant-text{display:block;min-width:0;line-height:1.14;text-align:left}
+    .rank-table .participant-name{display:block;white-space:normal;overflow-wrap:break-word;word-break:normal;hyphens:none;line-height:1.14;font-size:.88rem}
+    .rank-table .participant-text small{display:block;margin-top:3px;white-space:normal;overflow-wrap:break-word;word-break:normal;line-height:1.15;font-size:.68rem}
     [data-testid="stVerticalBlockBorderWrapper"]{background:var(--mx-card);border-color:var(--mx-border)!important;border-radius:18px!important;box-shadow:0 5px 16px rgba(7,26,51,.06)} div[data-testid="stMetric"]{background:#fff;border:1px solid var(--mx-border);padding:12px;border-radius:15px}
     .stButton>button,.stDownloadButton>button{border-radius:12px;font-weight:850;min-height:44px}.stButton>button[kind="primary"]{background:linear-gradient(90deg,var(--mx-green),#08bf69);border:0;color:#fff}
     div[data-baseweb="select"]>div,input{background:#fff!important;color:var(--mx-text)!important;border-color:#b8c7d9!important}[data-testid="stNumberInput"] input{text-align:center;font-size:1.4rem;font-weight:950;color:var(--mx-navy)!important;min-height:52px}.score-stack+[data-testid="stNumberInput"],.score-stack~[data-testid="stNumberInput"]{max-width:480px;margin-left:auto;margin-right:auto}
@@ -218,7 +222,7 @@ def inject_style():
     .pro-table .col-equipo{min-width:95px;max-width:135px}
     .pro-table .col-estado,.pro-table .col-survivor{min-width:90px;max-width:125px}
     .pro-table .col-capturados,.pro-table .col-total{min-width:78px;max-width:95px}
-    @media(max-width:640px){.rank-table{min-width:530px}.rank-table .rank-participant{width:215px}.rank-table .rank-number{width:60px}.rank-table .club-cell img{width:46px;height:46px;min-width:46px}.player-cell{min-width:190px;gap:8px}.mini-logo{width:48px;height:48px;min-width:48px}.pro-table td{padding:8px 7px}.block-container{padding-left:.55rem;padding-right:.55rem}.hero{grid-template-columns:auto 1fr;padding:13px}.hero .league-logo{width:58px;height:46px}.hero .ball{display:none}.hero h1{font-size:1.35rem}.team-name{font-size:.75rem}.profile-card img{width:76px;height:76px}[data-testid="stNumberInput"] input{font-size:1.15rem}.stTabs [data-baseweb="tab"]{font-size:.73rem;padding-left:7px;padding-right:7px}}
+    @media(max-width:640px){.rank-table{min-width:540px}.rank-table .rank-pos{width:44px}.rank-table .rank-number{width:48px}.rank-table td{padding-top:8px;padding-bottom:8px}.rank-table .club-cell{grid-template-columns:38px minmax(0,1fr);gap:7px}.rank-table .club-cell img{width:38px;height:38px;min-width:38px}.rank-table .participant-name{font-size:.82rem}.rank-table .participant-text small{font-size:.64rem}.player-cell{min-width:190px;gap:8px}.mini-logo{width:48px;height:48px;min-width:48px}.pro-table td{padding:8px 7px}.block-container{padding-left:.55rem;padding-right:.55rem}.hero{grid-template-columns:auto 1fr;padding:13px}.hero .league-logo{width:58px;height:46px}.hero .ball{display:none}.hero h1{font-size:1.35rem}.team-name{font-size:.75rem}.profile-card img{width:76px;height:76px}[data-testid="stNumberInput"] input{font-size:1.15rem}.stTabs [data-baseweb="tab"]{font-size:.73rem;padding-left:7px;padding-right:7px}}
     </style>
     """, unsafe_allow_html=True)
 
@@ -344,7 +348,7 @@ def render_rank_table(df, title="Tabla general"):
         extra = f'<span class="tie-info">Exactos: {int(r.get("EXACTOS",0))}</span>' if "EXACTOS" in r else ""
         rows.append(f'<tr class="{cls}"><td class="rank-pos">{pos}</td><td class="rank-participant"><div class="club-cell"><img src="{logo}" alt="{team_full}"><span class="participant-text"><b class="participant-name">{r["JUGADOR"]}</b><small style="color:#667085;font-weight:600">{TEAM_SHORT.get(team_full,team_full)} {extra}</small></span></div></td><td class="pts rank-number">{points}</td><td class="rank-number">{gf}</td><td class="rank-number">{gc}</td><td class="rank-number">{dif:+d}</td></tr>')
     legend='<div class="table-legend"><span><i class="legend-bar"></i>Top 8: clasifica a elección de campeón</span><span>Desempate: puntos, DIF, GF y exactos</span></div>' if title.lower().startswith("tabla general") else ''
-    html=f'<div class="table-title"><h3>{title}</h3><span class="table-pill">Actualizada en tiempo real</span></div>{legend}<div class="pro-table-wrap"><table class="rank-table"><thead><tr><th>Pos.</th><th>Participante</th><th>Puntos</th><th>GF</th><th>GC</th><th>DIF</th></tr></thead><tbody>{"".join(rows)}</tbody></table></div>'
+    html=f'<div class="table-title"><h3>{title}</h3><span class="table-pill">Actualizada en tiempo real</span></div>{legend}<div class="pro-table-wrap"><table class="rank-table"><colgroup><col style="width:48px"><col><col style="width:52px"><col style="width:52px"><col style="width:52px"><col style="width:52px"></colgroup><thead><tr><th>POS.</th><th>PARTICIPANTE</th><th>PTS</th><th>GF</th><th>GC</th><th>DIF</th></tr></thead><tbody>{"".join(rows)}</tbody></table></div>'
     st.markdown(html,unsafe_allow_html=True)
 
 
