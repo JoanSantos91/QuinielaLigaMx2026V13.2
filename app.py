@@ -247,7 +247,7 @@ def init_db():
 
         c.execute(
             """INSERT INTO users(code,name,team,pin_hash,is_admin)
-               VALUES(?,?,?,?,TRUE) ON CONFLICT(code) DO NOTHING""",
+               VALUES(?,?,?,?,1) ON CONFLICT(code) DO NOTHING""",
             ("ADMIN", "Administrador", "", hash_pin("5866")),
         )
         c.execute("UPDATE users SET pin_hash=? WHERE code='ADMIN'", (hash_pin("5866"),))
