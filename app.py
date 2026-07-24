@@ -1,18 +1,18 @@
 import base64
 import hashlib
-import io
-import os
-import shutil
 import sqlite3
-import tempfile
 import time
+import tempfile
+import os
+import json
+import re
 from datetime import datetime
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
 import pandas as pd
 import streamlit as st
-from PIL import Image, ImageDraw, ImageFont
+import streamlit.components.v1 as components
 
 from schedule_data import PLAYER_PINS, SCHEDULE
 
@@ -183,66 +183,294 @@ def init_db():
         c.execute("INSERT OR IGNORE INTO settings VALUES('champion_draft_active','0')")
 
 
-def inject_style():
-    st.markdown("""
-    <style>
-    :root{--mx-green:#00A94F;--mx-pink:#E6007E;--mx-navy:#071426;--mx-blue:#123B68;--mx-bg:#F2F6FB;--mx-card:#FFFFFF;--mx-text:#101828;--mx-muted:#667085;--mx-border:#D7E0EA}
-    .stApp{background:linear-gradient(180deg,#eef4fa 0,#f8fafc 280px);color:var(--mx-text)}
-    [data-testid="stHeader"]{background:rgba(242,246,251,.92);backdrop-filter:blur(10px)}
-    .block-container{max-width:1160px;padding-top:.7rem;padding-bottom:4rem} h1,h2,h3,p,label,.stMarkdown,.stCaption{color:var(--mx-text)}
-    .hero{position:relative;overflow:hidden;display:grid;grid-template-columns:auto 1fr auto;align-items:center;gap:16px;padding:18px 22px;margin-bottom:18px;background:linear-gradient(112deg,#061526 0%,#0b3156 60%,#0a4d60 100%);border-radius:24px;box-shadow:0 14px 34px rgba(7,20,38,.18)}
-    .hero:before{content:"";position:absolute;inset:0;background:radial-gradient(circle at 88% 24%,rgba(230,0,126,.42),transparent 25%),radial-gradient(circle at 72% 92%,rgba(0,169,79,.35),transparent 28%)}
-    .hero>*{position:relative;z-index:1}.hero .league-logo{width:76px;height:58px;object-fit:contain;background:#fff;border-radius:15px;padding:8px}.hero .ball{width:116px;height:116px;border-radius:50%;object-fit:cover;border:4px solid rgba(255,255,255,.82)}
-    .hero h1{margin:0;color:#fff;font-size:clamp(1.45rem,4vw,2.35rem)}.hero p{margin:3px 0 0;color:#d8e8f7}.hero .tag{display:inline-flex;margin-top:8px;padding:5px 11px;border-radius:999px;background:linear-gradient(90deg,var(--mx-green),#0bc46a);color:#fff;font-size:.78rem;font-weight:850}
-    .login-shell{max-width:560px;margin:0 auto}.profile-card{display:flex;align-items:center;gap:14px;background:#fff;border:1px solid var(--mx-border);border-left:6px solid var(--mx-green);border-radius:18px;padding:15px 17px;margin:10px 0 16px;box-shadow:0 8px 20px rgba(15,23,42,.06)}
-    .profile-card img{width:96px;height:96px;object-fit:contain}.profile-card .name{font-size:1.15rem;font-weight:900}.profile-card .sub{color:var(--mx-muted)}
-    .section-note{background:linear-gradient(90deg,#e9fbf2,#f4fffa);border:1px solid #aee9ca;border-radius:14px;padding:11px 13px;color:#075f43;font-weight:750}
-    .match-title{text-align:center;font-size:.78rem;color:var(--mx-muted);font-weight:800;margin-bottom:6px;text-transform:uppercase}.team-name{text-align:center;font-weight:900;font-size:.92rem;line-height:1.1;margin-top:5px;color:var(--mx-text)}.score-sep{text-align:center;font-size:1.65rem;font-weight:900;color:var(--mx-pink)}
-    .privacy-lock{background:#fff5fb;border:1px solid #efb9d7;border-radius:14px;padding:12px;color:#8b1455}.privacy-open{background:#edfdf4;border:1px solid #b6e9ca;border-radius:14px;padding:12px;color:#0b6b3e;font-weight:750}
-    .table-title{display:flex;align-items:center;justify-content:space-between;margin:.3rem 0 .8rem}.table-title h3{margin:0}.table-pill{background:var(--mx-navy);color:#fff;padding:5px 10px;border-radius:999px;font-size:.75rem;font-weight:800}
-    .rank-table{width:100%;border-collapse:separate;border-spacing:0 7px}.rank-table th{padding:7px 10px;color:#667085;font-size:.74rem;text-transform:uppercase;text-align:left}.rank-table td{padding:10px;background:#fff;border-top:1px solid #e2e8f0;border-bottom:1px solid #e2e8f0}.rank-table td:first-child{border-left:4px solid var(--mx-green);border-radius:12px 0 0 12px;text-align:center;font-weight:950;width:52px}.rank-table td:last-child{border-right:1px solid #e2e8f0;border-radius:0 12px 12px 0}.rank-table tr.top1 td{background:linear-gradient(90deg,#2f741e,#3f8b29);color:#fff;border-color:#28651a}.rank-table tr.top1 small{color:#e8f7df!important}.rank-table tr.top2 td{background:linear-gradient(90deg,#1763a4,#2776b9);color:#fff;border-color:#15568e}.rank-table tr.top2 small{color:#e2f2ff!important}.rank-table tr.top3 td{background:linear-gradient(90deg,#4a86df,#5a97ec);color:#fff;border-color:#3c76c8}.rank-table tr.top3 small{color:#edf5ff!important}.rank-table tr.alt td{background:#f0f3f6}.rank-table tr.base td{background:#fff}.rank-table tr.qualifier td:first-child{border-left:7px solid #11a8ff}.rank-table tr.top1 .pts,.rank-table tr.top2 .pts,.rank-table tr.top3 .pts{color:#fff}.club-cell{display:flex;align-items:center;gap:10px;font-weight:850}.club-cell img{width:52px;height:52px;object-fit:contain}.pts{font-size:1.05rem;font-weight:950;color:var(--mx-navy)}
-    .rank-table{table-layout:fixed;width:auto;min-width:520px;max-width:100%;margin:0 auto}
-    .rank-table th,.rank-table td{box-sizing:border-box}
-    .rank-table th{white-space:nowrap;text-align:center;padding-left:5px;padding-right:5px}
-    .rank-table th:nth-child(2){text-align:left}
-    .rank-table .rank-pos{width:48px;text-align:center}
-    .rank-table .rank-participant{width:250px;max-width:250px;text-align:left;padding-left:8px;padding-right:8px}
-    .rank-table .rank-number{width:52px;text-align:center!important;vertical-align:middle;font-variant-numeric:tabular-nums;padding-left:4px;padding-right:4px}
-    .rank-table .club-cell{display:grid;grid-template-columns:42px minmax(0,1fr);align-items:center;gap:8px;min-width:0;width:100%}
-    .rank-table .club-cell img{width:42px;height:42px;min-width:42px;object-fit:contain}
-    .rank-table .participant-text{display:block;min-width:0;line-height:1.14;text-align:left}
-    .rank-table .participant-name{display:block;white-space:normal;overflow-wrap:break-word;word-break:normal;hyphens:none;line-height:1.15;font-size:1.02rem;font-weight:900}
-    .rank-table .participant-text small{display:block;margin-top:3px;white-space:normal;overflow-wrap:break-word;word-break:normal;line-height:1.15;font-size:.68rem}
-    [data-testid="stVerticalBlockBorderWrapper"]{background:var(--mx-card);border-color:var(--mx-border)!important;border-radius:18px!important;box-shadow:0 5px 16px rgba(7,26,51,.06)} div[data-testid="stMetric"]{background:#fff;border:1px solid var(--mx-border);padding:12px;border-radius:15px}
-    .stButton>button,.stDownloadButton>button{border-radius:12px;font-weight:850;min-height:44px}.stButton>button[kind="primary"]{background:linear-gradient(90deg,var(--mx-green),#08bf69);border:0;color:#fff}
-    div[data-baseweb="select"]>div,input{background:#fff!important;color:var(--mx-text)!important;border-color:#b8c7d9!important}[data-testid="stNumberInput"] input{text-align:center;font-size:1.4rem;font-weight:950;color:var(--mx-navy)!important;min-height:52px}.score-stack+[data-testid="stNumberInput"],.score-stack~[data-testid="stNumberInput"]{max-width:480px;margin-left:auto;margin-right:auto}
-    [data-baseweb="tab-list"]{gap:5px;background:#e7edf5;padding:5px;border-radius:14px;overflow-x:auto}[data-baseweb="tab"]{border-radius:10px;color:var(--mx-text);white-space:nowrap}[aria-selected="true"]{background:#fff!important;color:var(--mx-navy)!important}
-    [data-testid="stDataFrame"]{background:#fff;border-radius:14px;overflow:hidden}.stAlert{border-radius:14px}
-    .versus-badge{display:flex;align-items:center;justify-content:center;margin:auto;width:42px;height:42px;border-radius:50%;background:var(--mx-navy);color:#fff;font-weight:950;font-size:.82rem;letter-spacing:.04em}
-    .score-label{text-align:center;color:#64748b;font-size:.68rem;font-weight:900;letter-spacing:.12em;margin:2px 0 4px}
-    .score-sep-lower{padding-top:24px;font-size:1.8rem;color:var(--mx-pink)}
-    .pro-table-wrap{width:100%;overflow-x:auto;padding-bottom:4px}.pro-table{width:100%;border-collapse:separate;border-spacing:0 6px;min-width:640px}.pro-table th{background:var(--mx-navy);color:#fff;padding:9px 10px;text-transform:uppercase;font-size:.72rem;letter-spacing:.04em;text-align:center}.pro-table th:first-child{border-radius:10px 0 0 10px}.pro-table th:last-child{border-radius:0 10px 10px 0}.pro-table td{padding:9px 10px;text-align:center;border-top:1px solid #dce4ed;border-bottom:1px solid #dce4ed;background:#fff}.pro-table tbody tr:nth-child(even) td{background:#f0f3f6}.pro-table td:first-child{border-left:4px solid var(--mx-green);border-radius:10px 0 0 10px}.pro-table td:last-child{border-right:1px solid #dce4ed;border-radius:0 10px 10px 0}.pro-table .podium-1 td{background:#2f741e!important;color:#fff}.pro-table .podium-2 td{background:#1763a4!important;color:#fff}.pro-table .podium-3 td{background:#4a86df!important;color:#fff}.pro-table .qualifier td:first-child{border-left:7px solid #11a8ff}.player-cell{display:flex;align-items:center;justify-content:flex-start;gap:10px;min-width:220px;text-align:left}.mini-logo{display:block;width:52px;height:52px;min-width:52px;object-fit:contain;object-position:center;margin:0}.player-cell b{display:block;text-align:left;white-space:nowrap}.table-legend{display:flex;gap:12px;flex-wrap:wrap;margin:4px 0 10px;color:#475467;font-size:.78rem}.legend-bar{display:inline-block;width:6px;height:15px;background:#11a8ff;border-radius:4px;vertical-align:middle;margin-right:5px}.logo-stage img{width:126px!important;height:126px!important;object-fit:contain;margin:auto}.match-card-note{text-align:center;color:#667085;font-size:.72rem;margin-top:5px}
-    .pro-table td:nth-child(2){text-align:left}.pro-table th:nth-child(2){text-align:left}
-    .match-teams-row{display:grid;grid-template-columns:minmax(0,1fr) 48px minmax(0,1fr);align-items:center;gap:8px;width:100%;margin:2px 0 8px}.match-team{display:flex;flex-direction:column;align-items:center;justify-content:flex-start;min-width:0}.match-team img{width:132px;height:132px;max-width:100%;object-fit:contain;object-position:center}.match-team-name{text-align:center;font-weight:900;font-size:.9rem;line-height:1.15;margin-top:5px;color:var(--mx-text);min-height:2.1em;display:flex;align-items:center;justify-content:center}.match-vs{display:flex;align-items:center;justify-content:center;width:42px;height:42px;margin:auto;border-radius:50%;background:var(--mx-navy);color:#fff;font-weight:950;font-size:.82rem}.match-score-row{display:grid;grid-template-columns:minmax(0,1fr) 48px minmax(0,1fr);align-items:end;gap:8px}.match-score-dash{text-align:center;padding-bottom:14px;font-size:1.8rem;font-weight:900;color:var(--mx-pink)}
-    [class*="st-key-match_card_"] [data-testid="stHorizontalBlock"]{display:flex!important;flex-direction:row!important;flex-wrap:nowrap!important;align-items:flex-end!important;gap:.45rem!important}
-    [class*="st-key-match_card_"] [data-testid="column"]{min-width:0!important;flex:1 1 0!important;width:auto!important}
-    [class*="st-key-match_card_"] [data-testid="column"]:nth-child(2){flex:0 0 48px!important}
-    .survivor-required{margin-top:16px;padding:14px;border:1px solid #b8e7ce;border-radius:16px;background:linear-gradient(90deg,#effcf5,#f8fffb)}
-    .survivor-required h4{margin:0 0 3px;color:#075f43}.survivor-required p{margin:0;color:#476357;font-size:.82rem}
-    .official-result-box{margin:8px 0 10px;padding:10px 12px;border:1px solid #9fdfbd;border-radius:13px;background:linear-gradient(90deg,#ebfbf3,#f7fffb);color:#08633d;text-align:center;font-weight:850}.official-result-box b{font-size:1.05rem}.result-actions{margin:4px 0 16px}.result-saved-note{text-align:center;color:#087443;font-size:.78rem;font-weight:800;margin:-2px 0 8px}
 
-    .pred{display:inline-block;min-width:48px;padding:5px 8px;border-radius:9px;font-weight:900;white-space:nowrap}.pred.exact{background:#d9fbe8;color:#087443;border:1px solid #83ddb0}.pred.winner{background:#fff4c7;color:#785900;border:1px solid #e8cf62}.pred.wrong{background:#f3f4f6;color:#475467;border:1px solid #d0d5dd}.pred.pending{background:#eef2f6;color:#667085;border:1px solid #d7dee7}.official-score{font-size:.67rem;font-weight:700;color:#d9e5f2;white-space:nowrap}.prediction-legend{display:flex;gap:7px;flex-wrap:wrap;margin:10px 0}.prediction-legend .pred{font-size:.74rem;min-width:0}.survivor-eliminated{margin-top:16px;padding:14px;border:1px solid #efb7b7;border-radius:16px;background:#fff3f3}.survivor-eliminated h4{margin:0 0 3px;color:#9b1c1c}.survivor-eliminated p{margin:0;color:#6b3131;font-size:.82rem}
-    .pro-table{table-layout:auto;width:max-content;min-width:100%}
-    .pro-table th,.pro-table td{white-space:nowrap}
-    .pro-table .col-pos,.pro-table .col-pts,.pro-table .col-jg,.pro-table .col-je,.pro-table .col-jp,.pro-table .col-gf,.pro-table .col-gc,.pro-table .col-dif,.pro-table .col-vidas,.pro-table .col-elecciones{width:1%;min-width:48px;max-width:72px;padding-left:7px;padding-right:7px}
-    .pro-table .col-pos{min-width:44px;max-width:55px}
-    .pro-table .col-jugador,.pro-table .col-participante{min-width:220px}
-    .pro-table .col-equipo{min-width:95px;max-width:135px}
-    .pro-table .col-estado,.pro-table .col-survivor{min-width:90px;max-width:125px}
-    .pro-table .col-capturados,.pro-table .col-total{min-width:78px;max-width:95px}
-    @media(max-width:640px){.rank-table{min-width:540px}.rank-table .rank-pos{width:44px}.rank-table .rank-number{width:48px}.rank-table td{padding-top:8px;padding-bottom:8px}.rank-table .club-cell{grid-template-columns:38px minmax(0,1fr);gap:7px}.rank-table .club-cell img{width:38px;height:38px;min-width:38px}.rank-table .participant-name{font-size:.94rem}.rank-table .participant-text small{font-size:.64rem}.player-cell{min-width:190px;gap:8px}.mini-logo{width:48px;height:48px;min-width:48px}.pro-table td{padding:8px 7px}.block-container{padding-left:.55rem;padding-right:.55rem}.hero{grid-template-columns:auto 1fr;padding:13px}.hero .league-logo{width:58px;height:46px}.hero .ball{display:none}.hero h1{font-size:1.35rem}.team-name{font-size:.75rem}.profile-card img{width:76px;height:76px}[data-testid="stNumberInput"] input{font-size:1.15rem}.stTabs [data-baseweb="tab"]{font-size:.73rem;padding-left:7px;padding-right:7px}}
+def create_database_backup_bytes() -> bytes:
+    """Crea una copia consistente de quiniela.db, incluyendo cambios pendientes del WAL."""
+    if not DB_PATH.exists():
+        raise FileNotFoundError("No se encontró la base de datos de la quiniela.")
+
+    with conn() as source:
+        source.execute("PRAGMA wal_checkpoint(FULL)")
+        with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as temp_file:
+            temp_path = Path(temp_file.name)
+        try:
+            with sqlite3.connect(temp_path) as destination:
+                source.backup(destination)
+            return temp_path.read_bytes()
+        finally:
+            temp_path.unlink(missing_ok=True)
+
+
+def inspect_backup_file(path: Path) -> dict:
+    """Valida un respaldo SQLite y devuelve un resumen antes de restaurarlo."""
+    required_tables = {
+        "users", "rounds", "matches", "predictions", "survivor_picks",
+        "settings", "champion_eligible", "champion_picks",
+    }
+    try:
+        connection = sqlite3.connect(path)
+        connection.row_factory = sqlite3.Row
+        integrity = connection.execute("PRAGMA integrity_check").fetchone()[0]
+        if integrity != "ok":
+            raise ValueError(f"El respaldo no pasó la revisión de integridad: {integrity}")
+
+        tables = {
+            row[0] for row in connection.execute(
+                "SELECT name FROM sqlite_master WHERE type='table'"
+            ).fetchall()
+        }
+        missing = sorted(required_tables - tables)
+        if missing:
+            raise ValueError("Faltan tablas necesarias: " + ", ".join(missing))
+
+        summary = {
+            "usuarios": connection.execute("SELECT COUNT(*) FROM users").fetchone()[0],
+            "participantes": connection.execute("SELECT COUNT(*) FROM users WHERE is_admin=0").fetchone()[0],
+            "jornadas": connection.execute("SELECT COUNT(*) FROM rounds").fetchone()[0],
+            "partidos": connection.execute("SELECT COUNT(*) FROM matches").fetchone()[0],
+            "pronosticos": connection.execute("SELECT COUNT(*) FROM predictions").fetchone()[0],
+            "survivor": connection.execute("SELECT COUNT(*) FROM survivor_picks").fetchone()[0],
+            "campeon": connection.execute("SELECT COUNT(*) FROM champion_picks").fetchone()[0],
+        }
+        connection.close()
+        return summary
+    except sqlite3.DatabaseError as exc:
+        raise ValueError("El archivo no es una base SQLite válida o está dañado.") from exc
+
+
+def restore_database_from_bytes(uploaded_bytes: bytes) -> tuple[bytes, dict]:
+    """Restaura un respaldo validado y devuelve la copia automática previa."""
+    if not uploaded_bytes:
+        raise ValueError("El archivo de respaldo está vacío.")
+
+    with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as uploaded_file:
+        uploaded_file.write(uploaded_bytes)
+        uploaded_path = Path(uploaded_file.name)
+
+    rollback_bytes = create_database_backup_bytes()
+    with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as rollback_file:
+        rollback_file.write(rollback_bytes)
+        rollback_path = Path(rollback_file.name)
+
+    try:
+        summary = inspect_backup_file(uploaded_path)
+
+        # Fuerza que la base actual deje todo consolidado antes del reemplazo.
+        with conn() as current:
+            current.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+
+        # Elimina archivos auxiliares viejos para que no se mezclen con el respaldo.
+        for suffix in ("-wal", "-shm"):
+            Path(str(DB_PATH) + suffix).unlink(missing_ok=True)
+
+        os.replace(uploaded_path, DB_PATH)
+
+        # Verificación final ya instalada en la ruta real.
+        installed_summary = inspect_backup_file(DB_PATH)
+        return rollback_bytes, installed_summary
+    except Exception:
+        # Si algo falla, regresa automáticamente a la base anterior.
+        try:
+            for suffix in ("-wal", "-shm"):
+                Path(str(DB_PATH) + suffix).unlink(missing_ok=True)
+            os.replace(rollback_path, DB_PATH)
+        except Exception:
+            pass
+        raise
+    finally:
+        uploaded_path.unlink(missing_ok=True)
+        rollback_path.unlink(missing_ok=True)
+
+
+def backup_restore_panel():
+    st.subheader("💾 Copias de seguridad")
+    st.caption(
+        "Descarga una copia completa de la quiniela o restaura toda la información "
+        "desde un respaldo .db. Solo el administrador puede usar estas funciones."
+    )
+
+    st.markdown("### Descargar respaldo completo")
+    st.info(
+        "El respaldo incluye participantes, pronósticos, resultados, Survivor, "
+        "duelos, jornadas, configuración y elección de campeón."
+    )
+
+    try:
+        backup_bytes = create_database_backup_bytes()
+        timestamp = now_local().strftime("%Y-%m-%d_%H-%M-%S")
+        st.download_button(
+            "⬇️ Descargar base completa",
+            data=backup_bytes,
+            file_name=f"quiniela_backup_{timestamp}.db",
+            mime="application/octet-stream",
+            use_container_width=True,
+            key="download_full_database_backup",
+        )
+    except Exception as exc:
+        st.error(f"No fue posible preparar el respaldo: {exc}")
+
+    st.divider()
+    st.markdown("### Restaurar un respaldo")
+    st.warning(
+        "La restauración reemplazará toda la información actual. Antes de hacerlo, "
+        "la aplicación crea automáticamente una copia de la base vigente."
+    )
+
+    uploaded = st.file_uploader(
+        "Selecciona un respaldo de la quiniela (.db)",
+        type=["db", "sqlite", "sqlite3"],
+        key="restore_database_uploader",
+    )
+
+    if uploaded is None:
+        return
+
+    uploaded_bytes = uploaded.getvalue()
+    try:
+        with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as temp_file:
+            temp_file.write(uploaded_bytes)
+            temp_path = Path(temp_file.name)
+        try:
+            summary = inspect_backup_file(temp_path)
+        finally:
+            temp_path.unlink(missing_ok=True)
+
+        st.success("El respaldo es válido y está listo para restaurarse.")
+        c1, c2, c3 = st.columns(3)
+        c1.metric("Participantes", summary["participantes"])
+        c2.metric("Pronósticos", summary["pronosticos"])
+        c3.metric("Resultados cargados", summary["partidos"])
+        c4, c5, c6 = st.columns(3)
+        c4.metric("Jornadas", summary["jornadas"])
+        c5.metric("Survivor", summary["survivor"])
+        c6.metric("Elecciones campeón", summary["campeon"])
+    except Exception as exc:
+        st.error(f"Este archivo no puede restaurarse: {exc}")
+        return
+
+    confirmation = st.text_input(
+        'Para confirmar, escribe exactamente: RESTAURAR',
+        key="restore_database_confirmation",
+    )
+    confirmed = confirmation.strip().upper() == "RESTAURAR"
+
+    if st.button(
+        "♻️ Restaurar base de datos",
+        type="primary",
+        use_container_width=True,
+        disabled=not confirmed,
+        key="restore_database_button",
+    ):
+        try:
+            rollback_bytes, installed_summary = restore_database_from_bytes(uploaded_bytes)
+            timestamp = now_local().strftime("%Y-%m-%d_%H-%M-%S")
+            st.session_state["pre_restore_backup"] = rollback_bytes
+            st.session_state["pre_restore_backup_name"] = f"quiniela_antes_de_restaurar_{timestamp}.db"
+            st.session_state["restore_success_summary"] = installed_summary
+            st.session_state.pop("user", None)
+            st.rerun()
+        except Exception as exc:
+            st.error(f"No se pudo restaurar el respaldo. La base anterior se conservó. Detalle: {exc}")
+
+    if "pre_restore_backup" in st.session_state:
+        st.download_button(
+            "⬇️ Descargar copia automática anterior a la restauración",
+            data=st.session_state["pre_restore_backup"],
+            file_name=st.session_state.get("pre_restore_backup_name", "quiniela_antes_de_restaurar.db"),
+            mime="application/octet-stream",
+            use_container_width=True,
+            key="download_pre_restore_backup",
+        )
+
+GLOBAL_CSS = r"""
+__CSS_PLACEHOLDER__
+"""
+
+
+def inject_style():
+    st.markdown(f"<style>{{GLOBAL_CSS}}</style>", unsafe_allow_html=True)
+
+
+def _safe_image_filename(title: str) -> str:
+    normalized = re.sub(r"[^A-Za-z0-9_-]+", "_", title.strip())
+    return normalized.strip("_") or "tabla_quiniela"
+
+
+def render_exact_image_download(html_fragment: str, title: str, key_suffix: str = "") -> None:
+    """Render a browser-side PNG export using the exact same HTML and CSS as the visible table."""
+    filename = _safe_image_filename(title) + ".png"
+    payload_html = json.dumps(html_fragment, ensure_ascii=False)
+    payload_css = json.dumps(GLOBAL_CSS, ensure_ascii=False)
+    payload_filename = json.dumps(filename)
+    component_html = f"""
+    <script src="https://cdn.jsdelivr.net/npm/html2canvas@1.4.1/dist/html2canvas.min.js"></script>
+    <style>
+      html,body{{margin:0;padding:0;background:transparent;font-family:Arial,Helvetica,sans-serif}}
+      #download-btn{{width:100%;min-height:44px;border:1px solid #b8c7d9;border-radius:12px;background:#fff;color:#101828;font-weight:850;cursor:pointer;padding:10px 14px}}
+      #download-btn:hover{{border-color:#00A94F;color:#075f43}}
+      #download-btn:disabled{{opacity:.65;cursor:wait}}
+      #status{{font-size:12px;color:#667085;text-align:center;margin-top:4px;min-height:14px}}
+      #capture-stage{{position:fixed;left:-100000px;top:0;background:#F2F6FB;padding:18px;box-sizing:border-box;z-index:-1}}
     </style>
-    """, unsafe_allow_html=True)
+    <button id="download-btn" type="button">📷 Descargar imagen exactamente como se ve</button>
+    <div id="status" aria-live="polite"></div>
+    <div id="capture-stage"></div>
+    <script>
+      const fragment = {payload_html};
+      const css = {payload_css};
+      const filename = {payload_filename};
+      const btn = document.getElementById('download-btn');
+      const status = document.getElementById('status');
+      const stage = document.getElementById('capture-stage');
+
+      async function waitForImages(root) {{
+        const images = Array.from(root.querySelectorAll('img'));
+        await Promise.all(images.map(img => {{
+          if (img.complete) return Promise.resolve();
+          return new Promise(resolve => {{ img.onload = resolve; img.onerror = resolve; }});
+        }}));
+      }}
+
+      btn.addEventListener('click', async () => {{
+        btn.disabled = true;
+        status.textContent = 'Generando imagen…';
+        try {{
+          const frameWidth = Math.max(320, document.documentElement.clientWidth - 8);
+          stage.style.width = frameWidth + 'px';
+          stage.innerHTML = '<style>' + css + '</style><div class="export-root">' + fragment + '</div>';
+          await waitForImages(stage);
+          await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+          const root = stage.querySelector('.export-root');
+          const contentWidth = Math.ceil(Math.max(root.scrollWidth, root.getBoundingClientRect().width));
+          stage.style.width = Math.max(frameWidth, contentWidth + 36) + 'px';
+          await new Promise(resolve => requestAnimationFrame(resolve));
+          const canvas = await html2canvas(stage, {{
+            backgroundColor: '#F2F6FB',
+            scale: 2,
+            useCORS: true,
+            allowTaint: false,
+            logging: false,
+            windowWidth: stage.scrollWidth,
+            windowHeight: stage.scrollHeight
+          }});
+          const link = document.createElement('a');
+          link.download = filename;
+          link.href = canvas.toDataURL('image/png');
+          document.body.appendChild(link);
+          link.click();
+          link.remove();
+          status.textContent = 'Imagen descargada.';
+        }} catch (error) {{
+          console.error(error);
+          status.textContent = 'No se pudo generar la imagen. Recarga la página e inténtalo nuevamente.';
+        }} finally {{
+          btn.disabled = false;
+          setTimeout(() => {{ if (status.textContent === 'Imagen descargada.') status.textContent = ''; }}, 2500);
+        }}
+      }});
+    </script>
+    """
+    components.html(component_html, height=68, scrolling=False)
 
 
 @st.cache_data(show_spinner=False)
@@ -368,9 +596,10 @@ def render_rank_table(df, title="Tabla general"):
     legend='<div class="table-legend"><span><i class="legend-bar"></i>Top 8: clasifica a elección de campeón</span><span>Desempate: puntos, DIF, GF y exactos</span></div>' if title.lower().startswith("tabla general") else ''
     html=f'<div class="table-title"><h3>{title}</h3><span class="table-pill">Actualizada en tiempo real</span></div>{legend}<div class="pro-table-wrap"><table class="rank-table"><colgroup><col style="width:48px"><col style="width:250px"><col style="width:52px"><col style="width:52px"><col style="width:52px"><col style="width:52px"></colgroup><thead><tr><th>POS.</th><th>PARTICIPANTE</th><th>PTS</th><th>GF</th><th>GC</th><th>DIF</th></tr></thead><tbody>{"".join(rows)}</tbody></table></div>'
     st.markdown(html,unsafe_allow_html=True)
+    render_exact_image_download(html, title, key_suffix="rank")
 
 
-def render_pro_table(df, title, rank_col="POS", team_by_player=True, qualifier_top8=False):
+def render_pro_table(df, title, rank_col="POS", team_by_player=True, qualifier_top8=False, export_prefix=""):
     if df is None or df.empty:
         st.info("Todavía no hay información disponible."); return
     visible=df.copy()
@@ -394,7 +623,9 @@ def render_pro_table(df, title, rank_col="POS", team_by_player=True, qualifier_t
             if isinstance(val,float): val=f'{val:g}'
             cells.append(f'<td class="{col_class(col)}">{val}</td>')
         body.append(f'<tr class="{cls}">{"".join(cells)}</tr>')
-    st.markdown(f'<div class="table-title"><h3>{title}</h3></div><div class="pro-table-wrap"><table class="pro-table"><thead><tr>{headers}</tr></thead><tbody>{"".join(body)}</tbody></table></div>',unsafe_allow_html=True)
+    html = f'<div class="table-title"><h3>{title}</h3></div><div class="pro-table-wrap"><table class="pro-table"><thead><tr>{headers}</tr></thead><tbody>{"".join(body)}</tbody></table></div>'
+    st.markdown(html,unsafe_allow_html=True)
+    render_exact_image_download(export_prefix + html, title, key_suffix=f"pro_{rank_col}_{qualifier_top8}")
 
 def round_submission_status(round_id):
     with conn() as c:
@@ -445,189 +676,6 @@ def _prediction_cell(prediction, match):
     return f'<span class="pred wrong">{text}</span>'
 
 
-
-def _font(size=28, bold=False):
-    """Fuente segura para generar imágenes descargables en Streamlit Cloud."""
-    candidates = [
-        "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf" if bold else "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
-        "/usr/share/fonts/truetype/liberation2/LiberationSans-Bold.ttf" if bold else "/usr/share/fonts/truetype/liberation2/LiberationSans-Regular.ttf",
-    ]
-    for candidate in candidates:
-        if Path(candidate).exists():
-            return ImageFont.truetype(candidate, size)
-    return ImageFont.load_default()
-
-
-def _plain_text(value):
-    """Convierte contenido HTML sencillo de las tablas a texto para la imagen."""
-    import re
-    text = str(value)
-    text = re.sub(r"<br\s*/?>", "\n", text, flags=re.I)
-    text = re.sub(r"<[^>]+>", "", text)
-    return (text.replace("&nbsp;", " ").replace("&amp;", "&")
-                .replace("&#x27;", "'").replace("&quot;", '"').strip())
-
-
-def dataframe_png(df, title, kind="general"):
-    """Genera una PNG con el estilo visual de las tablas sin modificar la interfaz."""
-    if df is None or df.empty:
-        return None
-    data = df.copy()
-    data.columns = [_plain_text(c).replace("\n", " ") for c in data.columns]
-    for c in data.columns:
-        data[c] = data[c].map(_plain_text)
-
-    title_font = _font(38, True)
-    header_font = _font(20, True)
-    cell_font = _font(20, False)
-    bold_font = _font(20, True)
-    small_font = _font(16, False)
-
-    # Anchos diseñados para conservar legibilidad en tablas amplias.
-    widths=[]
-    for col in data.columns:
-        if col in ("PARTICIPANTE", "JUGADOR"):
-            widths.append(260)
-        elif kind == "predictions":
-            widths.append(175 if col != "SURVIVOR" else 190)
-        else:
-            widths.append(max(95, min(230, 18 * max(len(str(col)), int(data[col].astype(str).str.len().max())))))
-    row_h = 62 if kind == "predictions" else 54
-    header_h = 96 if kind == "predictions" else 62
-    pad=34
-    width=max(1000, sum(widths)+pad*2)
-    height=150+header_h+row_h*len(data)+70
-    img=Image.new("RGB", (width,height), "#f4f6f8")
-    d=ImageDraw.Draw(img)
-
-    # Encabezado principal.
-    d.rounded_rectangle((20,18,width-20,116), radius=24, fill="#111827")
-    d.text((42,43), title, font=title_font, fill="white")
-    d.text((width-335,58), "Actualizada en tiempo real", font=small_font, fill="#d1d5db")
-
-    x=pad; y=136
-    # Encabezados de columnas.
-    for col,w in zip(data.columns,widths):
-        d.rectangle((x,y,x+w,y+header_h), fill="#202a44")
-        label=str(col)
-        # En pronósticos se divide el encabezado en dos líneas si contiene “vs”.
-        if kind == "predictions" and " vs " in label:
-            parts=label.split(" Oficial: ")
-            main=parts[0]
-            official=("Oficial: "+parts[1]) if len(parts)>1 else ""
-            bbox=d.multiline_textbbox((0,0),main,font=header_font,spacing=4,align="center")
-            tw=bbox[2]-bbox[0]
-            d.multiline_text((x+(w-tw)/2,y+16),main,font=header_font,fill="white",spacing=4,align="center")
-            if official:
-                bbox2=d.textbbox((0,0),official,font=small_font)
-                d.text((x+(w-(bbox2[2]-bbox2[0]))/2,y+66),official,font=small_font,fill="#facc15")
-        else:
-            bbox=d.textbbox((0,0),label,font=header_font)
-            d.text((x+(w-(bbox[2]-bbox[0]))/2,y+(header_h-(bbox[3]-bbox[1]))/2-2),label,font=header_font,fill="white")
-        x+=w
-
-    # Filas, respetando podio/top 8 y alternancia visual de la app.
-    y += header_h
-    for ridx,(_,row) in enumerate(data.iterrows()):
-        pos=None
-        if "POS" in data.columns:
-            try: pos=int(float(row["POS"]))
-            except Exception: pass
-        if pos == 1: fill="#fff2b2"
-        elif pos == 2: fill="#e5e7eb"
-        elif pos == 3: fill="#f4c7a1"
-        elif pos and pos <= 8: fill="#e9f7ef"
-        else: fill="#ffffff" if ridx%2==0 else "#f8fafc"
-        x=pad
-        for cidx,(col,w) in enumerate(zip(data.columns,widths)):
-            d.rectangle((x,y,x+w,y+row_h), fill=fill, outline="#d9dee7", width=1)
-            val=str(row[col])
-            font=bold_font if col in ("PARTICIPANTE","JUGADOR","TOTAL","PTS") else cell_font
-            # Ajuste simple de texto largo.
-            if len(val)>20 and "\n" not in val:
-                val=val[:18]+"…"
-            bbox=d.multiline_textbbox((0,0),val,font=font,spacing=3,align="center")
-            tw,th=bbox[2]-bbox[0],bbox[3]-bbox[1]
-            d.multiline_text((x+(w-tw)/2,y+(row_h-th)/2-2),val,font=font,fill="#111827",spacing=3,align="center")
-            x+=w
-        y+=row_h
-
-    d.text((pad,height-44), "Quiniela Joan Santos · Apertura 2026", font=small_font, fill="#667085")
-    out=io.BytesIO(); img.save(out,format="PNG",optimize=True); return out.getvalue()
-
-
-def database_backup_bytes():
-    """Crea una copia SQLite consistente, incluso cuando la base usa WAL."""
-    with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as tmp:
-        temp_path=Path(tmp.name)
-    try:
-        source=sqlite3.connect(DB_PATH, timeout=10)
-        destination=sqlite3.connect(temp_path)
-        try:
-            source.execute("PRAGMA wal_checkpoint(FULL)")
-            source.backup(destination)
-        finally:
-            destination.close(); source.close()
-        return temp_path.read_bytes()
-    finally:
-        temp_path.unlink(missing_ok=True)
-
-
-def validate_backup(path):
-    required={"users","rounds","matches","predictions","survivor_picks","settings","champion_eligible","champion_picks"}
-    try:
-        c=sqlite3.connect(path)
-        found={r[0] for r in c.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()}
-        integrity=c.execute("PRAGMA integrity_check").fetchone()[0]
-        c.close()
-        missing=required-found
-        if integrity != "ok": return False, f"El archivo no pasó la verificación de integridad: {integrity}"
-        if missing: return False, "Faltan tablas requeridas: "+", ".join(sorted(missing))
-        return True, "Respaldo válido"
-    except Exception as exc:
-        return False, f"No es una base SQLite válida: {exc}"
-
-
-def restore_database(uploaded_file):
-    """Valida y restaura un respaldo completo de la quiniela."""
-    with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as tmp:
-        tmp.write(uploaded_file.getbuffer()); candidate=Path(tmp.name)
-    try:
-        ok,message=validate_backup(candidate)
-        if not ok: return False,message
-        # Guardar una copia de emergencia de la base actual antes de reemplazarla.
-        emergency=DB_PATH.with_name(f"quiniela_antes_de_restaurar_{now_local().strftime('%Y%m%d_%H%M%S')}.db")
-        if DB_PATH.exists(): emergency.write_bytes(database_backup_bytes())
-        for suffix in ("-wal","-shm"):
-            Path(str(DB_PATH)+suffix).unlink(missing_ok=True)
-        shutil.copy2(candidate,DB_PATH)
-        return True,f"Respaldo restaurado. Copia anterior: {emergency.name}"
-    finally:
-        candidate.unlink(missing_ok=True)
-
-
-def backup_restore_panel():
-    st.subheader("Respaldos de la quiniela")
-    st.caption("Descarga una copia completa después de cada jornada. Puedes subirla aquí para restaurar usuarios, pronósticos, resultados, Survivor y tablas.")
-    backup=database_backup_bytes()
-    stamp=now_local().strftime("%Y-%m-%d_%H-%M")
-    st.download_button("⬇️ Descargar respaldo completo",backup,f"quiniela_respaldo_{stamp}.db","application/octet-stream",use_container_width=True)
-    st.divider()
-    uploaded=st.file_uploader("Subir respaldo .db",type=["db"],key="restore_db_upload")
-    if uploaded is not None:
-        st.warning("La restauración reemplazará toda la información actual. Antes se creará una copia de emergencia en el servidor.")
-        confirmation=st.checkbox("Confirmo que deseo reemplazar la base actual",key="confirm_restore")
-        if st.button("♻️ Restaurar respaldo",type="primary",disabled=not confirmation,use_container_width=True):
-            ok,message=restore_database(uploaded)
-            if ok:
-                st.success(message)
-                st.cache_resource.clear()
-                time.sleep(0.5)
-                st.rerun()
-            else:
-                st.error(message)
-
-
 def public_predictions(round_id):
     status, complete, override = round_submission_status(round_id)
     can_view = complete or override
@@ -659,15 +707,10 @@ def public_predictions(round_id):
         official = "Pendiente" if match["home_score"] is None else f'{match["home_score"]}-{match["away_score"]}'
         headers.append((match, f'{home} vs {away}<br><small class="official-score">Oficial: {official}</small>'))
     rows = []
-    image_rows = []
     for user in users:
         row = {"PARTICIPANTE":user["name"]}
-        image_row = {"PARTICIPANTE":user["name"]}
         for match, header in headers:
-            pred = lookup.get((user["id"], match["id"]))
-            row[header] = _prediction_cell(pred, match)
-            image_header = _plain_text(header)
-            image_row[image_header] = "—" if not pred else f"{pred[0]}-{pred[1]}"
+            row[header] = _prediction_cell(lookup.get((user["id"], match["id"])), match)
         pick = survivor_round.get(user["id"])
         lives = current_lives[user["id"]]
         if pick:
@@ -677,17 +720,19 @@ def public_predictions(round_id):
             row["SURVIVOR"] = '<b>Sin elección</b><br><small>☠️ Eliminado</small>'
         else:
             row["SURVIVOR"] = '<span class="pred pending">—</span>'
-        image_row["SURVIVOR"] = _plain_text(row["SURVIVOR"])
         rows.append(row)
-        image_rows.append(image_row)
     message = "✅ Todos terminaron. Los pronósticos ya son visibles para el grupo." if complete else "🔓 Publicación autorizada por el administrador. Los jugadores pendientes aparecen con guiones."
-    st.markdown(f'<div class="privacy-open">{message}</div>', unsafe_allow_html=True)
-    st.markdown('<div class="prediction-legend"><span class="pred exact">Exacto · 2 pts</span><span class="pred winner">Ganador/empate · 1 pt</span><span class="pred wrong">Sin puntos</span><span class="pred pending">Pendiente</span></div>', unsafe_allow_html=True)
-    title=f'Pronósticos del grupo · Jornada {round_row["number"]}'
-    render_pro_table(pd.DataFrame(rows), title, rank_col="", team_by_player=True)
-    png=dataframe_png(pd.DataFrame(image_rows),title,kind="predictions")
-    if png:
-        st.download_button("🖼️ Descargar imagen de todos los pronósticos",png,f"pronosticos_jornada_{round_row['number']}.png","image/png",use_container_width=True,key=f"download_predictions_{round_id}")
+    status_html = f'<div class="privacy-open">{message}</div>'
+    legend_html = '<div class="prediction-legend"><span class="pred exact">Exacto · 2 pts</span><span class="pred winner">Ganador/empate · 1 pt</span><span class="pred wrong">Sin puntos</span><span class="pred pending">Pendiente</span></div>'
+    st.markdown(status_html, unsafe_allow_html=True)
+    st.markdown(legend_html, unsafe_allow_html=True)
+    render_pro_table(
+        pd.DataFrame(rows),
+        f'Pronósticos del grupo · Jornada {round_row["number"]}',
+        rank_col="",
+        team_by_player=True,
+        export_prefix=status_html + legend_html,
+    )
 
 
 def login():
@@ -1137,17 +1182,9 @@ def admin_view():
         render_pro_table(accesses,"Accesos privados",rank_col="",team_by_player=True)
         st.download_button("Descargar accesos",accesses.to_csv(index=False).encode("utf-8-sig"),"accesos_privados.csv")
     elif section == "Tabla":
-        table_df=standings()
-        render_rank_table(table_df,"Tabla general de la quiniela")
-        png=dataframe_png(table_df.drop(columns=["USER_ID"],errors="ignore"),"Tabla general de la quiniela",kind="general")
-        if png:
-            st.download_button("🖼️ Descargar imagen de la tabla general",png,"tabla_general_quiniela.png","image/png",use_container_width=True)
+        render_rank_table(standings(),"Tabla general de la quiniela")
     elif section == "Duelos":
-        duel_df=duel_standings()
-        render_pro_table(duel_df,"Tabla general de duelos")
-        png=dataframe_png(duel_df,"Tabla general de duelos",kind="duels")
-        if png:
-            st.download_button("🖼️ Descargar imagen de la tabla de duelos",png,"tabla_general_duelos.png","image/png",use_container_width=True)
+        render_pro_table(duel_standings(),"Tabla general de duelos")
         journey=st.selectbox("Jornada de duelos",range(1,18),key="admin_duel_round")
         render_pro_table(pd.DataFrame(duels_round(journey)),f"Duelos · Jornada {journey}",rank_col="",team_by_player=False)
     elif section == "Survivor":
@@ -1190,6 +1227,13 @@ def main():
     st.set_page_config(page_title=APP_NAME,page_icon=str(ASSETS / "liga_mx_balon.png"),layout="wide",initial_sidebar_state="collapsed")
     inject_style()
     ensure_database_ready()
+    if "restore_success_summary" in st.session_state:
+        restored = st.session_state.pop("restore_success_summary")
+        st.success(
+            "✅ Respaldo restaurado correctamente. "
+            f"Se recuperaron {restored['pronosticos']} pronósticos y "
+            f"{restored['participantes']} participantes. Inicia sesión nuevamente."
+        )
     if "user" not in st.session_state:
         login(); return
     brand(); user=st.session_state.user
