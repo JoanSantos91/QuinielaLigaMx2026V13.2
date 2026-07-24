@@ -1,6 +1,10 @@
 import base64
 import hashlib
+import io
+import os
+import shutil
 import sqlite3
+import tempfile
 import time
 from datetime import datetime
 from pathlib import Path
@@ -8,6 +12,7 @@ from zoneinfo import ZoneInfo
 
 import pandas as pd
 import streamlit as st
+from PIL import Image, ImageDraw, ImageFont
 
 from schedule_data import PLAYER_PINS, SCHEDULE
 
@@ -440,6 +445,189 @@ def _prediction_cell(prediction, match):
     return f'<span class="pred wrong">{text}</span>'
 
 
+
+def _font(size=28, bold=False):
+    """Fuente segura para generar imágenes descargables en Streamlit Cloud."""
+    candidates = [
+        "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf" if bold else "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+        "/usr/share/fonts/truetype/liberation2/LiberationSans-Bold.ttf" if bold else "/usr/share/fonts/truetype/liberation2/LiberationSans-Regular.ttf",
+    ]
+    for candidate in candidates:
+        if Path(candidate).exists():
+            return ImageFont.truetype(candidate, size)
+    return ImageFont.load_default()
+
+
+def _plain_text(value):
+    """Convierte contenido HTML sencillo de las tablas a texto para la imagen."""
+    import re
+    text = str(value)
+    text = re.sub(r"<br\s*/?>", "\n", text, flags=re.I)
+    text = re.sub(r"<[^>]+>", "", text)
+    return (text.replace("&nbsp;", " ").replace("&amp;", "&")
+                .replace("&#x27;", "'").replace("&quot;", '"').strip())
+
+
+def dataframe_png(df, title, kind="general"):
+    """Genera una PNG con el estilo visual de las tablas sin modificar la interfaz."""
+    if df is None or df.empty:
+        return None
+    data = df.copy()
+    data.columns = [_plain_text(c).replace("\n", " ") for c in data.columns]
+    for c in data.columns:
+        data[c] = data[c].map(_plain_text)
+
+    title_font = _font(38, True)
+    header_font = _font(20, True)
+    cell_font = _font(20, False)
+    bold_font = _font(20, True)
+    small_font = _font(16, False)
+
+    # Anchos diseñados para conservar legibilidad en tablas amplias.
+    widths=[]
+    for col in data.columns:
+        if col in ("PARTICIPANTE", "JUGADOR"):
+            widths.append(260)
+        elif kind == "predictions":
+            widths.append(175 if col != "SURVIVOR" else 190)
+        else:
+            widths.append(max(95, min(230, 18 * max(len(str(col)), int(data[col].astype(str).str.len().max())))))
+    row_h = 62 if kind == "predictions" else 54
+    header_h = 96 if kind == "predictions" else 62
+    pad=34
+    width=max(1000, sum(widths)+pad*2)
+    height=150+header_h+row_h*len(data)+70
+    img=Image.new("RGB", (width,height), "#f4f6f8")
+    d=ImageDraw.Draw(img)
+
+    # Encabezado principal.
+    d.rounded_rectangle((20,18,width-20,116), radius=24, fill="#111827")
+    d.text((42,43), title, font=title_font, fill="white")
+    d.text((width-335,58), "Actualizada en tiempo real", font=small_font, fill="#d1d5db")
+
+    x=pad; y=136
+    # Encabezados de columnas.
+    for col,w in zip(data.columns,widths):
+        d.rectangle((x,y,x+w,y+header_h), fill="#202a44")
+        label=str(col)
+        # En pronósticos se divide el encabezado en dos líneas si contiene “vs”.
+        if kind == "predictions" and " vs " in label:
+            parts=label.split(" Oficial: ")
+            main=parts[0]
+            official=("Oficial: "+parts[1]) if len(parts)>1 else ""
+            bbox=d.multiline_textbbox((0,0),main,font=header_font,spacing=4,align="center")
+            tw=bbox[2]-bbox[0]
+            d.multiline_text((x+(w-tw)/2,y+16),main,font=header_font,fill="white",spacing=4,align="center")
+            if official:
+                bbox2=d.textbbox((0,0),official,font=small_font)
+                d.text((x+(w-(bbox2[2]-bbox2[0]))/2,y+66),official,font=small_font,fill="#facc15")
+        else:
+            bbox=d.textbbox((0,0),label,font=header_font)
+            d.text((x+(w-(bbox[2]-bbox[0]))/2,y+(header_h-(bbox[3]-bbox[1]))/2-2),label,font=header_font,fill="white")
+        x+=w
+
+    # Filas, respetando podio/top 8 y alternancia visual de la app.
+    y += header_h
+    for ridx,(_,row) in enumerate(data.iterrows()):
+        pos=None
+        if "POS" in data.columns:
+            try: pos=int(float(row["POS"]))
+            except Exception: pass
+        if pos == 1: fill="#fff2b2"
+        elif pos == 2: fill="#e5e7eb"
+        elif pos == 3: fill="#f4c7a1"
+        elif pos and pos <= 8: fill="#e9f7ef"
+        else: fill="#ffffff" if ridx%2==0 else "#f8fafc"
+        x=pad
+        for cidx,(col,w) in enumerate(zip(data.columns,widths)):
+            d.rectangle((x,y,x+w,y+row_h), fill=fill, outline="#d9dee7", width=1)
+            val=str(row[col])
+            font=bold_font if col in ("PARTICIPANTE","JUGADOR","TOTAL","PTS") else cell_font
+            # Ajuste simple de texto largo.
+            if len(val)>20 and "\n" not in val:
+                val=val[:18]+"…"
+            bbox=d.multiline_textbbox((0,0),val,font=font,spacing=3,align="center")
+            tw,th=bbox[2]-bbox[0],bbox[3]-bbox[1]
+            d.multiline_text((x+(w-tw)/2,y+(row_h-th)/2-2),val,font=font,fill="#111827",spacing=3,align="center")
+            x+=w
+        y+=row_h
+
+    d.text((pad,height-44), "Quiniela Joan Santos · Apertura 2026", font=small_font, fill="#667085")
+    out=io.BytesIO(); img.save(out,format="PNG",optimize=True); return out.getvalue()
+
+
+def database_backup_bytes():
+    """Crea una copia SQLite consistente, incluso cuando la base usa WAL."""
+    with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as tmp:
+        temp_path=Path(tmp.name)
+    try:
+        source=sqlite3.connect(DB_PATH, timeout=10)
+        destination=sqlite3.connect(temp_path)
+        try:
+            source.execute("PRAGMA wal_checkpoint(FULL)")
+            source.backup(destination)
+        finally:
+            destination.close(); source.close()
+        return temp_path.read_bytes()
+    finally:
+        temp_path.unlink(missing_ok=True)
+
+
+def validate_backup(path):
+    required={"users","rounds","matches","predictions","survivor_picks","settings","champion_eligible","champion_picks"}
+    try:
+        c=sqlite3.connect(path)
+        found={r[0] for r in c.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()}
+        integrity=c.execute("PRAGMA integrity_check").fetchone()[0]
+        c.close()
+        missing=required-found
+        if integrity != "ok": return False, f"El archivo no pasó la verificación de integridad: {integrity}"
+        if missing: return False, "Faltan tablas requeridas: "+", ".join(sorted(missing))
+        return True, "Respaldo válido"
+    except Exception as exc:
+        return False, f"No es una base SQLite válida: {exc}"
+
+
+def restore_database(uploaded_file):
+    """Valida y restaura un respaldo completo de la quiniela."""
+    with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as tmp:
+        tmp.write(uploaded_file.getbuffer()); candidate=Path(tmp.name)
+    try:
+        ok,message=validate_backup(candidate)
+        if not ok: return False,message
+        # Guardar una copia de emergencia de la base actual antes de reemplazarla.
+        emergency=DB_PATH.with_name(f"quiniela_antes_de_restaurar_{now_local().strftime('%Y%m%d_%H%M%S')}.db")
+        if DB_PATH.exists(): emergency.write_bytes(database_backup_bytes())
+        for suffix in ("-wal","-shm"):
+            Path(str(DB_PATH)+suffix).unlink(missing_ok=True)
+        shutil.copy2(candidate,DB_PATH)
+        return True,f"Respaldo restaurado. Copia anterior: {emergency.name}"
+    finally:
+        candidate.unlink(missing_ok=True)
+
+
+def backup_restore_panel():
+    st.subheader("Respaldos de la quiniela")
+    st.caption("Descarga una copia completa después de cada jornada. Puedes subirla aquí para restaurar usuarios, pronósticos, resultados, Survivor y tablas.")
+    backup=database_backup_bytes()
+    stamp=now_local().strftime("%Y-%m-%d_%H-%M")
+    st.download_button("⬇️ Descargar respaldo completo",backup,f"quiniela_respaldo_{stamp}.db","application/octet-stream",use_container_width=True)
+    st.divider()
+    uploaded=st.file_uploader("Subir respaldo .db",type=["db"],key="restore_db_upload")
+    if uploaded is not None:
+        st.warning("La restauración reemplazará toda la información actual. Antes se creará una copia de emergencia en el servidor.")
+        confirmation=st.checkbox("Confirmo que deseo reemplazar la base actual",key="confirm_restore")
+        if st.button("♻️ Restaurar respaldo",type="primary",disabled=not confirmation,use_container_width=True):
+            ok,message=restore_database(uploaded)
+            if ok:
+                st.success(message)
+                st.cache_resource.clear()
+                time.sleep(0.5)
+                st.rerun()
+            else:
+                st.error(message)
+
+
 def public_predictions(round_id):
     status, complete, override = round_submission_status(round_id)
     can_view = complete or override
@@ -471,10 +659,15 @@ def public_predictions(round_id):
         official = "Pendiente" if match["home_score"] is None else f'{match["home_score"]}-{match["away_score"]}'
         headers.append((match, f'{home} vs {away}<br><small class="official-score">Oficial: {official}</small>'))
     rows = []
+    image_rows = []
     for user in users:
         row = {"PARTICIPANTE":user["name"]}
+        image_row = {"PARTICIPANTE":user["name"]}
         for match, header in headers:
-            row[header] = _prediction_cell(lookup.get((user["id"], match["id"])), match)
+            pred = lookup.get((user["id"], match["id"]))
+            row[header] = _prediction_cell(pred, match)
+            image_header = _plain_text(header)
+            image_row[image_header] = "—" if not pred else f"{pred[0]}-{pred[1]}"
         pick = survivor_round.get(user["id"])
         lives = current_lives[user["id"]]
         if pick:
@@ -484,11 +677,17 @@ def public_predictions(round_id):
             row["SURVIVOR"] = '<b>Sin elección</b><br><small>☠️ Eliminado</small>'
         else:
             row["SURVIVOR"] = '<span class="pred pending">—</span>'
+        image_row["SURVIVOR"] = _plain_text(row["SURVIVOR"])
         rows.append(row)
+        image_rows.append(image_row)
     message = "✅ Todos terminaron. Los pronósticos ya son visibles para el grupo." if complete else "🔓 Publicación autorizada por el administrador. Los jugadores pendientes aparecen con guiones."
     st.markdown(f'<div class="privacy-open">{message}</div>', unsafe_allow_html=True)
     st.markdown('<div class="prediction-legend"><span class="pred exact">Exacto · 2 pts</span><span class="pred winner">Ganador/empate · 1 pt</span><span class="pred wrong">Sin puntos</span><span class="pred pending">Pendiente</span></div>', unsafe_allow_html=True)
-    render_pro_table(pd.DataFrame(rows), f'Pronósticos del grupo · Jornada {round_row["number"]}', rank_col="", team_by_player=True)
+    title=f'Pronósticos del grupo · Jornada {round_row["number"]}'
+    render_pro_table(pd.DataFrame(rows), title, rank_col="", team_by_player=True)
+    png=dataframe_png(pd.DataFrame(image_rows),title,kind="predictions")
+    if png:
+        st.download_button("🖼️ Descargar imagen de todos los pronósticos",png,f"pronosticos_jornada_{round_row['number']}.png","image/png",use_container_width=True,key=f"download_predictions_{round_id}")
 
 
 def login():
@@ -803,7 +1002,7 @@ def player_view(user):
 def admin_view():
     section = st.radio(
         "Panel",
-        ["Resultados","Captura manual","Jornadas","Entregas","Participantes","Tabla","Duelos","Survivor","Campeón"],
+        ["Resultados","Captura manual","Jornadas","Entregas","Participantes","Tabla","Duelos","Survivor","Campeón","Respaldos"],
         horizontal=True,
         key="admin_section",
         label_visibility="collapsed",
@@ -938,14 +1137,22 @@ def admin_view():
         render_pro_table(accesses,"Accesos privados",rank_col="",team_by_player=True)
         st.download_button("Descargar accesos",accesses.to_csv(index=False).encode("utf-8-sig"),"accesos_privados.csv")
     elif section == "Tabla":
-        render_rank_table(standings(),"Tabla general de la quiniela")
+        table_df=standings()
+        render_rank_table(table_df,"Tabla general de la quiniela")
+        png=dataframe_png(table_df.drop(columns=["USER_ID"],errors="ignore"),"Tabla general de la quiniela",kind="general")
+        if png:
+            st.download_button("🖼️ Descargar imagen de la tabla general",png,"tabla_general_quiniela.png","image/png",use_container_width=True)
     elif section == "Duelos":
-        render_pro_table(duel_standings(),"Tabla general de duelos")
+        duel_df=duel_standings()
+        render_pro_table(duel_df,"Tabla general de duelos")
+        png=dataframe_png(duel_df,"Tabla general de duelos",kind="duels")
+        if png:
+            st.download_button("🖼️ Descargar imagen de la tabla de duelos",png,"tabla_general_duelos.png","image/png",use_container_width=True)
         journey=st.selectbox("Jornada de duelos",range(1,18),key="admin_duel_round")
         render_pro_table(pd.DataFrame(duels_round(journey)),f"Duelos · Jornada {journey}",rank_col="",team_by_player=False)
     elif section == "Survivor":
         render_pro_table(survivor_status(),"Tabla Survivor")
-    else:
+    elif section == "Campeón":
         render_pro_table(champion_order().drop(columns=["USER_ID"]),"Orden de elección",qualifier_top8=True)
         with conn() as c:
             current=[x["team"] for x in c.execute("SELECT team FROM champion_eligible")]
@@ -961,6 +1168,8 @@ def admin_view():
         champion_view(admin=True)
         if st.button("Reiniciar selección de campeón"):
             run_write(lambda c: c.execute("DELETE FROM champion_picks")); st.rerun()
+    else:
+        backup_restore_panel()
 
 
 @st.cache_resource(show_spinner=False)
