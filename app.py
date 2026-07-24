@@ -223,8 +223,12 @@ def init_db():
         kickoff TEXT,
         home_score INTEGER,
         away_score INTEGER,
-        predictions_open INTEGER NOT NULL DEFAULT 1,
         UNIQUE(round_id, home_team, away_team)
+    );
+    CREATE TABLE IF NOT EXISTS match_permissions(
+        match_id BIGINT PRIMARY KEY REFERENCES matches(id) ON DELETE CASCADE,
+        predictions_enabled INTEGER NOT NULL DEFAULT 1,
+        updated_at TEXT
     );
     CREATE TABLE IF NOT EXISTS predictions(
         id BIGSERIAL PRIMARY KEY,
@@ -254,7 +258,6 @@ def init_db():
         submitted_at TEXT
     );
     ALTER TABLE rounds ADD COLUMN IF NOT EXISTS reveal_override INTEGER NOT NULL DEFAULT 0;
-    ALTER TABLE matches ADD COLUMN IF NOT EXISTS predictions_open INTEGER NOT NULL DEFAULT 1;
     """
     with conn() as c:
         for statement in schema.split(";"):
@@ -332,7 +335,8 @@ def init_db():
 _SQLITE_SCHEMA = """
 CREATE TABLE users(id INTEGER PRIMARY KEY,code TEXT UNIQUE,name TEXT,team TEXT,pin_hash TEXT,is_admin INTEGER NOT NULL DEFAULT 0);
 CREATE TABLE rounds(id INTEGER PRIMARY KEY,number INTEGER UNIQUE,name TEXT,deadline TEXT,is_open INTEGER NOT NULL DEFAULT 0,reveal_override INTEGER NOT NULL DEFAULT 0);
-CREATE TABLE matches(id INTEGER PRIMARY KEY,round_id INTEGER,home_team TEXT,away_team TEXT,kickoff TEXT,home_score INTEGER,away_score INTEGER,predictions_open INTEGER NOT NULL DEFAULT 1,UNIQUE(round_id,home_team,away_team));
+CREATE TABLE matches(id INTEGER PRIMARY KEY,round_id INTEGER,home_team TEXT,away_team TEXT,kickoff TEXT,home_score INTEGER,away_score INTEGER,UNIQUE(round_id,home_team,away_team));
+CREATE TABLE match_permissions(match_id INTEGER PRIMARY KEY,predictions_enabled INTEGER NOT NULL DEFAULT 1,updated_at TEXT);
 CREATE TABLE predictions(id INTEGER PRIMARY KEY,user_id INTEGER,match_id INTEGER,home_score INTEGER,away_score INTEGER,submitted_at TEXT,UNIQUE(user_id,match_id));
 CREATE TABLE survivor_picks(id INTEGER PRIMARY KEY,user_id INTEGER,round_id INTEGER,team TEXT,submitted_at TEXT,UNIQUE(user_id,round_id),UNIQUE(user_id,team));
 CREATE TABLE settings(key TEXT PRIMARY KEY,value TEXT);
@@ -343,7 +347,8 @@ CREATE TABLE champion_picks(id INTEGER PRIMARY KEY,user_id INTEGER UNIQUE,team T
 _TABLE_COLUMNS = {
     "users": ["id", "code", "name", "team", "pin_hash", "is_admin"],
     "rounds": ["id", "number", "name", "deadline", "is_open", "reveal_override"],
-    "matches": ["id", "round_id", "home_team", "away_team", "kickoff", "home_score", "away_score", "predictions_open"],
+    "matches": ["id", "round_id", "home_team", "away_team", "kickoff", "home_score", "away_score"],
+    "match_permissions": ["match_id", "predictions_enabled", "updated_at"],
     "predictions": ["id", "user_id", "match_id", "home_score", "away_score", "submitted_at"],
     "survivor_picks": ["id", "user_id", "round_id", "team", "submitted_at"],
     "settings": ["key", "value"],
@@ -379,7 +384,7 @@ def create_database_backup_bytes() -> bytes:
 
 _SQL_BACKUP_SIGNATURE = "-- QUINIELA_SUPABASE_BACKUP_V1"
 _SQL_BACKUP_TABLE_ORDER = (
-    "users", "rounds", "matches", "predictions", "survivor_picks",
+    "users", "rounds", "matches", "match_permissions", "predictions", "survivor_picks",
     "settings", "champion_eligible", "champion_picks",
 )
 
@@ -405,7 +410,7 @@ def create_postgres_sql_backup_bytes() -> bytes:
         "-- Este archivo fue generado por la app de Quiniela.",
         "BEGIN;",
         "SET CONSTRAINTS ALL DEFERRED;",
-        "TRUNCATE champion_picks, champion_eligible, survivor_picks, predictions, matches, rounds, settings, users RESTART IDENTITY CASCADE;",
+        "TRUNCATE champion_picks, champion_eligible, survivor_picks, predictions, match_permissions, matches, rounds, settings, users RESTART IDENTITY CASCADE;",
     ]
 
     with conn() as source:
@@ -478,7 +483,7 @@ def restore_postgres_sql_backup(uploaded_bytes: bytes) -> tuple[bytes, dict]:
 
 def inspect_backup_file(path: Path) -> dict:
     """Valida un respaldo SQLite y devuelve un resumen antes de restaurarlo."""
-    required_tables = set(_TABLE_COLUMNS)
+    required_tables = set(_TABLE_COLUMNS) - {"match_permissions"}
     try:
         connection = sqlite3.connect(path)
         connection.row_factory = sqlite3.Row
@@ -509,16 +514,32 @@ def _read_sqlite_backup(path: Path) -> dict:
     db.row_factory = sqlite3.Row
     try:
         imported = {}
+        existing_tables = {row[0] for row in db.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()}
+        legacy_match_permissions = []
         for table, columns in _TABLE_COLUMNS.items():
-            available = {
-                row[1] for row in db.execute(f"PRAGMA table_info({table})").fetchall()
-            }
+            if table not in existing_tables:
+                imported[table] = []
+                continue
+            available = {row[1] for row in db.execute(f"PRAGMA table_info({table})").fetchall()}
             selected = [column for column in columns if column in available]
+            if not selected:
+                imported[table] = []
+                continue
             rows = [dict(row) for row in db.execute(f"SELECT {','.join(selected)} FROM {table}").fetchall()]
-            if table == "matches" and "predictions_open" not in available:
-                for row in rows:
-                    row["predictions_open"] = 1
             imported[table] = rows
+
+        # Compatibilidad con respaldos anteriores que guardaban el permiso
+        # dentro de matches.predictions_open.
+        if "matches" in existing_tables:
+            match_columns = {row[1] for row in db.execute("PRAGMA table_info(matches)").fetchall()}
+            if "predictions_open" in match_columns and not imported.get("match_permissions"):
+                legacy_rows = db.execute("SELECT id,predictions_open FROM matches").fetchall()
+                legacy_match_permissions = [
+                    {"match_id": row["id"], "predictions_enabled": 1 if bool(row["predictions_open"]) else 0, "updated_at": None}
+                    for row in legacy_rows
+                ]
+        if legacy_match_permissions:
+            imported["match_permissions"] = legacy_match_permissions
         return imported
     finally:
         db.close()
@@ -546,9 +567,9 @@ def restore_database_from_bytes(uploaded_bytes: bytes) -> tuple[bytes, dict]:
         c = conn()
         try:
             c.execute(
-                "TRUNCATE champion_picks, champion_eligible, survivor_picks, predictions, matches, rounds, settings, users RESTART IDENTITY CASCADE"
+                "TRUNCATE champion_picks, champion_eligible, survivor_picks, predictions, match_permissions, matches, rounds, settings, users RESTART IDENTITY CASCADE"
             )
-            for table in ("users", "rounds", "matches", "predictions", "survivor_picks", "settings", "champion_eligible", "champion_picks"):
+            for table in ("users", "rounds", "matches", "match_permissions", "predictions", "survivor_picks", "settings", "champion_eligible", "champion_picks"):
                 columns = _TABLE_COLUMNS[table]
                 rows = imported[table]
                 if rows:
@@ -558,7 +579,7 @@ def restore_database_from_bytes(uploaded_bytes: bytes) -> tuple[bytes, dict]:
                         values = []
                         for col in columns:
                             value = row.get(col)
-                            if (table == "users" and col == "is_admin") or (table == "rounds" and col in {"is_open", "reveal_override"}) or (table == "matches" and col == "predictions_open"):
+                            if (table == "users" and col == "is_admin") or (table == "rounds" and col in {"is_open", "reveal_override"}) or (table == "match_permissions" and col == "predictions_enabled"):
                                 value = 1 if bool(value) else 0
                             values.append(value)
                         converted_rows.append(tuple(values))
@@ -979,7 +1000,9 @@ def public_predictions(round_id):
         )
         return
     with conn() as c:
-        matches = c.execute("SELECT * FROM matches WHERE round_id=? ORDER BY kickoff", (round_id,)).fetchall()
+        matches = c.execute("""SELECT m.*, COALESCE(mp.predictions_enabled, 1) AS predictions_open
+               FROM matches m LEFT JOIN match_permissions mp ON mp.match_id=m.id
+               WHERE m.round_id=? ORDER BY m.kickoff""", (round_id,)).fetchall()
         round_row = c.execute("SELECT number FROM rounds WHERE id=?", (round_id,)).fetchone()
         users = c.execute("SELECT id,name FROM users WHERE is_admin=0 ORDER BY CASE WHEN name='Joan Santos' THEN 0 ELSE 1 END,name").fetchall()
         predictions = c.execute("""
@@ -1307,7 +1330,9 @@ def player_view(user):
             unsafe_allow_html=True,
         )
         with conn() as c:
-            matches=c.execute("SELECT * FROM matches WHERE round_id=? ORDER BY kickoff",(round_row["id"],)).fetchall()
+            matches=c.execute("""SELECT m.*, COALESCE(mp.predictions_enabled, 1) AS predictions_open
+               FROM matches m LEFT JOIN match_permissions mp ON mp.match_id=m.id
+               WHERE m.round_id=? ORDER BY m.kickoff""",(round_row["id"],)).fetchall()
             previous={x["match_id"]:x for x in c.execute("SELECT * FROM predictions WHERE user_id=? AND match_id IN (SELECT id FROM matches WHERE round_id=?)",(user["id"],round_row["id"]))}
 
         now = now_local()
@@ -1406,7 +1431,9 @@ def admin_view():
         label = st.selectbox("Jornada", list(options), key="admin_results_round")
         selected = options[label]
         with conn() as c:
-            matches = c.execute("SELECT * FROM matches WHERE round_id=? ORDER BY kickoff", (selected["id"],)).fetchall()
+            matches = c.execute("""SELECT m.*, COALESCE(mp.predictions_enabled, 1) AS predictions_open
+               FROM matches m LEFT JOIN match_permissions mp ON mp.match_id=m.id
+               WHERE m.round_id=? ORDER BY m.kickoff""", (selected["id"],)).fetchall()
 
         completed = sum(1 for m in matches if m["home_score"] is not None and m["away_score"] is not None)
         st.markdown(
@@ -1464,7 +1491,11 @@ def admin_view():
             if st.button(toggle_label, key=f"toggle_predictions_match_{match_id}", use_container_width=True):
                 new_value = 0 if predictions_enabled else 1
                 run_write(lambda c, mid=match_id, value=new_value: c.execute(
-                    "UPDATE matches SET predictions_open=? WHERE id=?", (value, mid)
+                    """INSERT INTO match_permissions(match_id,predictions_enabled,updated_at)
+                       VALUES(?,?,?)
+                       ON CONFLICT(match_id) DO UPDATE SET
+                       predictions_enabled=EXCLUDED.predictions_enabled, updated_at=EXCLUDED.updated_at""",
+                    (mid, value, now_local().isoformat())
                 ))
                 st.rerun()
             st.divider()
@@ -1472,7 +1503,7 @@ def admin_view():
         if matches:
             open_count = sum(1 for m in matches if bool(m.get("predictions_open", 1)))
             st.markdown(
-                f'<div class="section-note"><b>Control de pronósticos:</b> {open_count}/{len(matches)} juegos habilitados.</div>',
+                f'<div class="section-note"><b>Control individual de pronósticos:</b> {open_count}/{len(matches)} juegos habilitados.</div>',
                 unsafe_allow_html=True,
             )
             all_open = open_count == len(matches)
@@ -1480,7 +1511,11 @@ def admin_view():
             if st.button(bulk_label, key=f"toggle_all_predictions_{selected['id']}", type="primary", use_container_width=True):
                 target = 0 if all_open else 1
                 run_write(lambda c, rid=selected["id"], value=target: c.execute(
-                    "UPDATE matches SET predictions_open=? WHERE round_id=?", (value, rid)
+                    """INSERT INTO match_permissions(match_id,predictions_enabled,updated_at)
+                       SELECT id, ?, ? FROM matches WHERE round_id=?
+                       ON CONFLICT(match_id) DO UPDATE SET
+                       predictions_enabled=EXCLUDED.predictions_enabled, updated_at=EXCLUDED.updated_at""",
+                    (value, now_local().isoformat(), rid)
                 ))
                 st.rerun()
 
@@ -1503,7 +1538,9 @@ def admin_view():
         round_row,selected_user=ro[rlabel],po[plabel]
         st.markdown(f'<div class="section-note">Capturando para <b>{selected_user["name"]}</b> · Jornada {round_row["number"]}</div>',unsafe_allow_html=True)
         with conn() as c:
-            matches=c.execute("SELECT * FROM matches WHERE round_id=? ORDER BY kickoff",(round_row["id"],)).fetchall()
+            matches=c.execute("""SELECT m.*, COALESCE(mp.predictions_enabled, 1) AS predictions_open
+               FROM matches m LEFT JOIN match_permissions mp ON mp.match_id=m.id
+               WHERE m.round_id=? ORDER BY m.kickoff""",(round_row["id"],)).fetchall()
             previous={x["match_id"]:x for x in c.execute("SELECT * FROM predictions WHERE user_id=? AND match_id IN (SELECT id FROM matches WHERE round_id=?)",(selected_user["id"],round_row["id"]))}
         with st.form(f"manual_capture_{selected_user['id']}_{round_row['id']}",clear_on_submit=False):
             values=[]
