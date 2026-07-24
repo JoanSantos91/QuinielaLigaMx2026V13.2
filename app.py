@@ -1054,7 +1054,7 @@ def login():
                     else:
                         c.execute(
                             "UPDATE users SET name=?, team=?, pin_hash=?, is_admin=? WHERE code=?",
-                            (name, team, hash_pin(expected_pin), code == "ADMIN", code),
+                            (name, team, hash_pin(expected_pin), 1 if code == "ADMIN" else 0, code),
                         )
                         user = c.execute(
                             "SELECT * FROM users WHERE code=?",
