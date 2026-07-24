@@ -223,6 +223,7 @@ def init_db():
         kickoff TEXT,
         home_score INTEGER,
         away_score INTEGER,
+        predictions_open INTEGER NOT NULL DEFAULT 1,
         UNIQUE(round_id, home_team, away_team)
     );
     CREATE TABLE IF NOT EXISTS predictions(
@@ -253,6 +254,7 @@ def init_db():
         submitted_at TEXT
     );
     ALTER TABLE rounds ADD COLUMN IF NOT EXISTS reveal_override INTEGER NOT NULL DEFAULT 0;
+    ALTER TABLE matches ADD COLUMN IF NOT EXISTS predictions_open INTEGER NOT NULL DEFAULT 1;
     """
     with conn() as c:
         for statement in schema.split(";"):
@@ -330,7 +332,7 @@ def init_db():
 _SQLITE_SCHEMA = """
 CREATE TABLE users(id INTEGER PRIMARY KEY,code TEXT UNIQUE,name TEXT,team TEXT,pin_hash TEXT,is_admin INTEGER NOT NULL DEFAULT 0);
 CREATE TABLE rounds(id INTEGER PRIMARY KEY,number INTEGER UNIQUE,name TEXT,deadline TEXT,is_open INTEGER NOT NULL DEFAULT 0,reveal_override INTEGER NOT NULL DEFAULT 0);
-CREATE TABLE matches(id INTEGER PRIMARY KEY,round_id INTEGER,home_team TEXT,away_team TEXT,kickoff TEXT,home_score INTEGER,away_score INTEGER,UNIQUE(round_id,home_team,away_team));
+CREATE TABLE matches(id INTEGER PRIMARY KEY,round_id INTEGER,home_team TEXT,away_team TEXT,kickoff TEXT,home_score INTEGER,away_score INTEGER,predictions_open INTEGER NOT NULL DEFAULT 1,UNIQUE(round_id,home_team,away_team));
 CREATE TABLE predictions(id INTEGER PRIMARY KEY,user_id INTEGER,match_id INTEGER,home_score INTEGER,away_score INTEGER,submitted_at TEXT,UNIQUE(user_id,match_id));
 CREATE TABLE survivor_picks(id INTEGER PRIMARY KEY,user_id INTEGER,round_id INTEGER,team TEXT,submitted_at TEXT,UNIQUE(user_id,round_id),UNIQUE(user_id,team));
 CREATE TABLE settings(key TEXT PRIMARY KEY,value TEXT);
@@ -341,7 +343,7 @@ CREATE TABLE champion_picks(id INTEGER PRIMARY KEY,user_id INTEGER UNIQUE,team T
 _TABLE_COLUMNS = {
     "users": ["id", "code", "name", "team", "pin_hash", "is_admin"],
     "rounds": ["id", "number", "name", "deadline", "is_open", "reveal_override"],
-    "matches": ["id", "round_id", "home_team", "away_team", "kickoff", "home_score", "away_score"],
+    "matches": ["id", "round_id", "home_team", "away_team", "kickoff", "home_score", "away_score", "predictions_open"],
     "predictions": ["id", "user_id", "match_id", "home_score", "away_score", "submitted_at"],
     "survivor_picks": ["id", "user_id", "round_id", "team", "submitted_at"],
     "settings": ["key", "value"],
@@ -506,10 +508,18 @@ def _read_sqlite_backup(path: Path) -> dict:
     db = sqlite3.connect(path)
     db.row_factory = sqlite3.Row
     try:
-        return {
-            table: [dict(row) for row in db.execute(f"SELECT {','.join(columns)} FROM {table}").fetchall()]
-            for table, columns in _TABLE_COLUMNS.items()
-        }
+        imported = {}
+        for table, columns in _TABLE_COLUMNS.items():
+            available = {
+                row[1] for row in db.execute(f"PRAGMA table_info({table})").fetchall()
+            }
+            selected = [column for column in columns if column in available]
+            rows = [dict(row) for row in db.execute(f"SELECT {','.join(selected)} FROM {table}").fetchall()]
+            if table == "matches" and "predictions_open" not in available:
+                for row in rows:
+                    row["predictions_open"] = 1
+            imported[table] = rows
+        return imported
     finally:
         db.close()
 
@@ -548,7 +558,7 @@ def restore_database_from_bytes(uploaded_bytes: bytes) -> tuple[bytes, dict]:
                         values = []
                         for col in columns:
                             value = row.get(col)
-                            if (table == "users" and col == "is_admin") or (table == "rounds" and col in {"is_open", "reveal_override"}):
+                            if (table == "users" and col == "is_admin") or (table == "rounds" and col in {"is_open", "reveal_override"}) or (table == "matches" and col == "predictions_open"):
                                 value = 1 if bool(value) else 0
                             values.append(value)
                         converted_rows.append(tuple(values))
@@ -1291,34 +1301,66 @@ def player_view(user):
         with conn() as c: rounds=c.execute("SELECT * FROM rounds ORDER BY number").fetchall()
         choices={f"Jornada {r['number']}":r for r in rounds}
         round_row=choices[st.selectbox("Jornada",list(choices),key="player_round")]
-        locked=not round_row["is_open"] or now_local() > normalize_datetime(round_row["deadline"])
-        st.markdown(f'<div class="section-note">{"🟢 Jornada abierta" if not locked else "🔒 Jornada cerrada"}</div>',unsafe_allow_html=True)
+        round_locked = not bool(round_row["is_open"])
+        st.markdown(
+            f'<div class="section-note">{"🟢 Jornada abierta · cada partido se habilita individualmente por el administrador" if not round_locked else "🔒 Jornada cerrada"}</div>',
+            unsafe_allow_html=True,
+        )
         with conn() as c:
             matches=c.execute("SELECT * FROM matches WHERE round_id=? ORDER BY kickoff",(round_row["id"],)).fetchall()
             previous={x["match_id"]:x for x in c.execute("SELECT * FROM predictions WHERE user_id=? AND match_id IN (SELECT id FROM matches WHERE round_id=?)",(user["id"],round_row["id"]))}
+
+        now = now_local()
+        editable_match_ids = []
         with st.form(f"player_predictions_{user['id']}_{round_row['id']}", clear_on_submit=False):
             values=[]
             for match in matches:
-                h,a=match_score_card(match,previous.get(match["id"]),locked,prefix=f"j{round_row['number']}_")
-                values.append((match["id"],h,a))
-            survivor_choice=survivor_form_selection(user,round_row,locked,key_prefix=f"j{round_row['number']}")
-            submitted=st.form_submit_button("Enviar pronósticos y Survivor",type="primary",disabled=locked,use_container_width=True)
+                has_official_result = match["home_score"] is not None and match["away_score"] is not None
+                match_started = now >= normalize_datetime(match["kickoff"])
+                enabled_by_admin = bool(match.get("predictions_open", 1))
+                match_locked = round_locked or not enabled_by_admin or has_official_result or match_started
+                h,a=match_score_card(match,previous.get(match["id"]),match_locked,prefix=f"j{round_row['number']}_")
+                if match_locked:
+                    if has_official_result:
+                        reason = "Resultado oficial capturado"
+                    elif match_started:
+                        reason = "Partido iniciado"
+                    elif round_locked:
+                        reason = "Jornada cerrada"
+                    else:
+                        reason = "Aún no habilitado por el administrador"
+                    st.caption(f"🔒 {reason}. Este pronóstico ya no puede modificarse.")
+                else:
+                    st.caption("🟢 Pronóstico habilitado para enviar o modificar.")
+                    editable_match_ids.append(match["id"])
+                    values.append((match["id"],h,a))
+
+            survivor_locked = round_locked or now > normalize_datetime(round_row["deadline"])
+            survivor_choice=survivor_form_selection(user,round_row,survivor_locked,key_prefix=f"j{round_row['number']}")
+            submitted=st.form_submit_button(
+                "Guardar pronósticos disponibles",
+                type="primary",
+                disabled=round_locked or not editable_match_ids,
+                use_container_width=True,
+            )
         if submitted:
-            if survivor_choice is None:
+            # Survivor solo es obligatorio mientras todavía está habilitado.
+            if not survivor_locked and survivor_choice is None:
                 st.error("Debes seleccionar tu equipo Survivor antes de enviar la jornada.")
             else:
                 try:
                     stamp=now_local().isoformat()
                     def save(c):
-                        c.executemany("""INSERT INTO predictions(user_id,match_id,home_score,away_score,submitted_at) VALUES(?,?,?,?,?)
-                            ON CONFLICT(user_id,match_id) DO UPDATE SET home_score=excluded.home_score,away_score=excluded.away_score,submitted_at=excluded.submitted_at""",
-                            [(user["id"],mid,h,a,stamp) for mid,h,a in values])
-                        if survivor_choice != "__ELIMINATED__":
+                        if values:
+                            c.executemany("""INSERT INTO predictions(user_id,match_id,home_score,away_score,submitted_at) VALUES(?,?,?,?,?)
+                                ON CONFLICT(user_id,match_id) DO UPDATE SET home_score=excluded.home_score,away_score=excluded.away_score,submitted_at=excluded.submitted_at""",
+                                [(user["id"],mid,h,a,stamp) for mid,h,a in values])
+                        if not survivor_locked and survivor_choice not in (None, "__ELIMINATED__"):
                             c.execute("""INSERT INTO survivor_picks(user_id,round_id,team,submitted_at) VALUES(?,?,?,?)
                                 ON CONFLICT(user_id,round_id) DO UPDATE SET team=excluded.team,submitted_at=excluded.submitted_at""",
                                 (user["id"],round_row["id"],survivor_choice,stamp))
                     run_write(save)
-                    st.success("Jornada enviada correctamente.")
+                    st.success("Pronósticos disponibles guardados correctamente. Los partidos ya iniciados o con resultado oficial permanecieron sin cambios.")
                 except sqlite3.IntegrityError:
                     st.error("Ese equipo Survivor ya fue utilizado en otra jornada.")
                 except sqlite3.OperationalError:
@@ -1414,6 +1456,33 @@ def admin_view():
                     if st.button("Cancelar edición", key=f"cancel_edit_result_{match_id}", use_container_width=True):
                         st.session_state.pop(edit_key, None)
                         st.rerun()
+
+            predictions_enabled = bool(m.get("predictions_open", 1))
+            status_text = "🟢 Habilitado para pronósticos" if predictions_enabled else "🔒 Bloqueado para pronósticos"
+            st.caption(status_text)
+            toggle_label = "Bloquear pronósticos de este juego" if predictions_enabled else "Activar pronósticos de este juego"
+            if st.button(toggle_label, key=f"toggle_predictions_match_{match_id}", use_container_width=True):
+                new_value = 0 if predictions_enabled else 1
+                run_write(lambda c, mid=match_id, value=new_value: c.execute(
+                    "UPDATE matches SET predictions_open=? WHERE id=?", (value, mid)
+                ))
+                st.rerun()
+            st.divider()
+
+        if matches:
+            open_count = sum(1 for m in matches if bool(m.get("predictions_open", 1)))
+            st.markdown(
+                f'<div class="section-note"><b>Control de pronósticos:</b> {open_count}/{len(matches)} juegos habilitados.</div>',
+                unsafe_allow_html=True,
+            )
+            all_open = open_count == len(matches)
+            bulk_label = "🔒 Bloquear todos los juegos" if all_open else "🟢 Activar todos los juegos"
+            if st.button(bulk_label, key=f"toggle_all_predictions_{selected['id']}", type="primary", use_container_width=True):
+                target = 0 if all_open else 1
+                run_write(lambda c, rid=selected["id"], value=target: c.execute(
+                    "UPDATE matches SET predictions_open=? WHERE round_id=?", (value, rid)
+                ))
+                st.rerun()
 
     elif section == "Captura manual":
         st.subheader("Captura manual de pronósticos")
