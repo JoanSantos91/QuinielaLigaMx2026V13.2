@@ -259,6 +259,32 @@ def init_db():
                        VALUES(?,?,?,?) ON CONFLICT(round_id,home_team,away_team) DO NOTHING""",
                     (round_id, home, away, kickoff),
                 )
+
+        # Verificación de seguridad: si una instalación anterior dejó las tablas vacías,
+        # vuelve a sembrar jornadas y partidos antes de mostrar el panel.
+        round_count = c.execute("SELECT COUNT(*) AS total FROM rounds").fetchone()["total"]
+        match_count = c.execute("SELECT COUNT(*) AS total FROM matches").fetchone()["total"]
+        if round_count == 0 or match_count == 0:
+            for number, games in SCHEDULE.items():
+                deadline = min(datetime.fromisoformat(game[0]) for game in games).isoformat(timespec="minutes")
+                c.execute(
+                    """INSERT INTO rounds(number,name,deadline,is_open,reveal_override)
+                       VALUES(?,?,?,FALSE,FALSE) ON CONFLICT(number) DO UPDATE SET
+                       name=EXCLUDED.name, deadline=EXCLUDED.deadline""",
+                    (int(number), f"Jornada {number}", deadline),
+                )
+                round_row = c.execute("SELECT id FROM rounds WHERE number=?", (int(number),)).fetchone()
+                if not round_row:
+                    raise RuntimeError(f"No fue posible crear la Jornada {number} en Supabase.")
+                round_id = round_row["id"]
+                for kickoff, home, away in games:
+                    c.execute(
+                        """INSERT INTO matches(round_id,home_team,away_team,kickoff)
+                           VALUES(?,?,?,?) ON CONFLICT(round_id,home_team,away_team) DO UPDATE SET
+                           kickoff=EXCLUDED.kickoff""",
+                        (round_id, home, away, kickoff),
+                    )
+
         c.execute(
             """INSERT INTO settings(key,value) VALUES('champion_draft_active','0')
                ON CONFLICT(key) DO NOTHING"""
@@ -1146,6 +1172,12 @@ def admin_view():
         with conn() as c:
             rounds = c.execute("SELECT * FROM rounds ORDER BY number").fetchall()
         options = {f"Jornada {r['number']}": r for r in rounds}
+        if not options:
+            st.error("No hay jornadas cargadas en Supabase. La aplicación intentará crearlas automáticamente al reiniciarse.")
+            if st.button("Crear jornadas ahora", type="primary", use_container_width=True, key="seed_rounds_now"):
+                init_db()
+                st.rerun()
+            return
         label = st.selectbox("Jornada", list(options), key="admin_results_round")
         selected = options[label]
         with conn() as c:
