@@ -119,6 +119,12 @@ class PostgresConnection:
             cursor.executemany(_translate_sql(sql), params_seq)
         return cursor
 
+    def executescript(self, sql_script: str):
+        """Ejecuta un respaldo SQL completo usando el protocolo simple de PostgreSQL."""
+        with self._connection.cursor() as cursor:
+            cursor.execute(sql_script, prepare=False)
+        return cursor
+
     def commit(self):
         self._connection.commit()
 
@@ -350,6 +356,106 @@ def create_database_backup_bytes() -> bytes:
         temp_path.unlink(missing_ok=True)
 
 
+
+_SQL_BACKUP_SIGNATURE = "-- QUINIELA_SUPABASE_BACKUP_V1"
+_SQL_BACKUP_TABLE_ORDER = (
+    "users", "rounds", "matches", "predictions", "survivor_picks",
+    "settings", "champion_eligible", "champion_picks",
+)
+
+
+def _sql_literal(value) -> str:
+    """Convierte un valor Python a un literal SQL PostgreSQL seguro y portátil."""
+    if value is None:
+        return "NULL"
+    if isinstance(value, bool):
+        return "TRUE" if value else "FALSE"
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        return str(value)
+    value = str(value).replace("\\", "\\\\").replace("'", "''")
+    return "E'" + value + "'"
+
+
+def create_postgres_sql_backup_bytes() -> bytes:
+    """Crea un respaldo SQL completo y restaurable de los datos guardados en Supabase."""
+    timestamp = now_local().isoformat(timespec="seconds")
+    lines = [
+        _SQL_BACKUP_SIGNATURE,
+        f"-- Creado: {timestamp} ({TZ.key})",
+        "-- Este archivo fue generado por la app de Quiniela.",
+        "BEGIN;",
+        "SET CONSTRAINTS ALL DEFERRED;",
+        "TRUNCATE champion_picks, champion_eligible, survivor_picks, predictions, matches, rounds, settings, users RESTART IDENTITY CASCADE;",
+    ]
+
+    with conn() as source:
+        for table in _SQL_BACKUP_TABLE_ORDER:
+            columns = _TABLE_COLUMNS[table]
+            order_by = "id" if "id" in columns else columns[0]
+            rows = source.execute(
+                f"SELECT {','.join(columns)} FROM {table} ORDER BY {order_by}"
+            ).fetchall()
+            if not rows:
+                lines.append(f"-- {table}: 0 registros")
+                continue
+            lines.append(f"-- {table}: {len(rows)} registros")
+            quoted_columns = ",".join(columns)
+            for row in rows:
+                values = ",".join(_sql_literal(row[col]) for col in columns)
+                lines.append(f"INSERT INTO {table} ({quoted_columns}) VALUES ({values});")
+
+    for table in ("users", "rounds", "matches", "predictions", "survivor_picks", "champion_picks"):
+        lines.append(
+            "SELECT setval(pg_get_serial_sequence('"
+            + table
+            + "','id'), COALESCE((SELECT MAX(id) FROM "
+            + table
+            + "),1), EXISTS(SELECT 1 FROM "
+            + table
+            + "));"
+        )
+    lines.extend(["COMMIT;", "-- FIN_QUINIELA_SUPABASE_BACKUP_V1", ""])
+    return "\n".join(lines).encode("utf-8")
+
+
+def inspect_postgres_sql_backup(uploaded_bytes: bytes) -> dict:
+    """Valida que el archivo sea un respaldo SQL generado por esta aplicación."""
+    if not uploaded_bytes:
+        raise ValueError("El archivo está vacío.")
+    try:
+        script = uploaded_bytes.decode("utf-8-sig")
+    except UnicodeDecodeError as exc:
+        raise ValueError("El archivo SQL no está codificado en UTF-8.") from exc
+    if not script.lstrip().startswith(_SQL_BACKUP_SIGNATURE):
+        raise ValueError("No es un respaldo SQL generado por esta aplicación.")
+    if "-- FIN_QUINIELA_SUPABASE_BACKUP_V1" not in script:
+        raise ValueError("El respaldo está incompleto o dañado.")
+    forbidden = ("CREATE ROLE", "ALTER ROLE", "DROP DATABASE", "CREATE DATABASE", "\\copy", "COPY PROGRAM")
+    upper = script.upper()
+    if any(item.upper() in upper for item in forbidden):
+        raise ValueError("El archivo contiene instrucciones no permitidas.")
+    summary = {}
+    for table in _SQL_BACKUP_TABLE_ORDER:
+        summary[table] = len(re.findall(rf"(?im)^INSERT\s+INTO\s+{re.escape(table)}\s*\(", script))
+    return summary
+
+
+def restore_postgres_sql_backup(uploaded_bytes: bytes) -> tuple[bytes, dict]:
+    """Restaura en Supabase un respaldo SQL creado por la propia aplicación."""
+    summary = inspect_postgres_sql_backup(uploaded_bytes)
+    rollback_bytes = create_postgres_sql_backup_bytes()
+    script = uploaded_bytes.decode("utf-8-sig")
+    c = conn()
+    try:
+        c.executescript(script)
+        c.commit()
+    except Exception:
+        c.rollback()
+        raise
+    finally:
+        c.close()
+    return rollback_bytes, summary
+
 def inspect_backup_file(path: Path) -> dict:
     """Valida un respaldo SQLite y devuelve un resumen antes de restaurarlo."""
     required_tables = set(_TABLE_COLUMNS)
@@ -445,84 +551,131 @@ def restore_database_from_bytes(uploaded_bytes: bytes) -> tuple[bytes, dict]:
 
 
 def backup_restore_panel():
-    st.subheader("💾 Copias de seguridad")
+    st.subheader("💾 Copias de seguridad SQL")
     st.caption(
-        "Descarga una copia completa de la quiniela o restaura toda la información "
-        "desde un respaldo .db. Los datos activos se guardan en Supabase."
+        "Crea y restaura una copia completa de la quiniela en formato PostgreSQL (.sql). "
+        "Incluye usuarios, jornadas, partidos, resultados, pronósticos, Survivor, campeón y configuración."
     )
-    st.markdown("### Descargar respaldo completo")
+
+    st.markdown("### Crear respaldo")
+    st.info("El archivo se genera directamente con la información actual almacenada en Supabase.")
     try:
-        backup_bytes = create_database_backup_bytes()
+        sql_backup = create_postgres_sql_backup_bytes()
         timestamp = now_local().strftime("%Y-%m-%d_%H-%M-%S")
         st.download_button(
-            "⬇️ Descargar base completa",
-            data=backup_bytes,
-            file_name=f"quiniela_backup_{timestamp}.db",
-            mime="application/octet-stream",
+            "⬇️ Crear y descargar respaldo SQL",
+            data=sql_backup,
+            file_name=f"quiniela_supabase_{timestamp}.sql",
+            mime="application/sql",
             use_container_width=True,
-            key="download_full_database_backup",
+            key="download_postgres_sql_backup",
         )
     except Exception as exc:
-        st.error(f"No fue posible preparar el respaldo: {exc}")
+        st.error(f"No fue posible crear el respaldo SQL: {exc}")
 
     st.divider()
-    st.markdown("### Restaurar o migrar un respaldo SQLite")
-    st.warning("La restauración reemplazará toda la información actual de Supabase.")
-    uploaded = st.file_uploader(
-        "Selecciona un respaldo de la quiniela (.db)",
-        type=["db", "sqlite", "sqlite3"],
-        key="restore_database_uploader",
+    st.markdown("### Restaurar respaldo")
+    st.warning(
+        "La restauración reemplazará toda la información actual de Supabase. "
+        "Antes de restaurar, la app crea automáticamente una copia de seguridad del estado actual."
     )
-    if uploaded is None:
-        return
-    uploaded_bytes = uploaded.getvalue()
-    try:
-        with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as temp_file:
-            temp_file.write(uploaded_bytes)
-            temp_path = Path(temp_file.name)
+    uploaded = st.file_uploader(
+        "Selecciona un respaldo SQL de la quiniela (.sql)",
+        type=["sql"],
+        key="restore_postgres_sql_uploader",
+    )
+    if uploaded is not None:
+        uploaded_bytes = uploaded.getvalue()
         try:
-            summary = inspect_backup_file(temp_path)
-        finally:
-            temp_path.unlink(missing_ok=True)
-        st.success("El respaldo es válido y está listo para migrarse a Supabase.")
-        c1, c2, c3 = st.columns(3)
-        c1.metric("Participantes", summary["participantes"])
-        c2.metric("Pronósticos", summary["pronosticos"])
-        c3.metric("Partidos", summary["partidos"])
-    except Exception as exc:
-        st.error(f"Este archivo no puede restaurarse: {exc}")
-        return
-
-    confirmation = st.text_input('Para confirmar, escribe exactamente: RESTAURAR', key="restore_database_confirmation")
-    if st.button(
-        "♻️ Migrar respaldo a Supabase",
-        type="primary",
-        use_container_width=True,
-        disabled=confirmation.strip().upper() != "RESTAURAR",
-        key="restore_database_button",
-    ):
-        try:
-            rollback_bytes, installed_summary = restore_database_from_bytes(uploaded_bytes)
-            timestamp = now_local().strftime("%Y-%m-%d_%H-%M-%S")
-            st.session_state["pre_restore_backup"] = rollback_bytes
-            st.session_state["pre_restore_backup_name"] = f"quiniela_antes_de_restaurar_{timestamp}.db"
-            st.session_state["restore_success_summary"] = installed_summary
-            st.session_state.pop("user", None)
-            st.cache_resource.clear()
-            st.rerun()
+            summary = inspect_postgres_sql_backup(uploaded_bytes)
+            st.success("El respaldo SQL es válido y está listo para restaurarse.")
+            c1, c2, c3 = st.columns(3)
+            c1.metric("Participantes", max(summary.get("users", 0) - 1, 0))
+            c2.metric("Pronósticos", summary.get("predictions", 0))
+            c3.metric("Partidos", summary.get("matches", 0))
         except Exception as exc:
-            st.error(f"No se pudo migrar el respaldo. Detalle: {exc}")
+            st.error(f"Este archivo no puede restaurarse: {exc}")
+            return
 
-    if "pre_restore_backup" in st.session_state:
+        confirmation = st.text_input(
+            'Para confirmar, escribe exactamente: RESTAURAR',
+            key="restore_postgres_sql_confirmation",
+        )
+        if st.button(
+            "♻️ Restaurar respaldo SQL",
+            type="primary",
+            use_container_width=True,
+            disabled=confirmation.strip().upper() != "RESTAURAR",
+            key="restore_postgres_sql_button",
+        ):
+            try:
+                rollback_bytes, installed_summary = restore_postgres_sql_backup(uploaded_bytes)
+                timestamp = now_local().strftime("%Y-%m-%d_%H-%M-%S")
+                st.session_state["pre_restore_sql_backup"] = rollback_bytes
+                st.session_state["pre_restore_sql_backup_name"] = (
+                    f"quiniela_antes_de_restaurar_{timestamp}.sql"
+                )
+                st.session_state["restore_success_summary"] = {
+                    "participantes": max(installed_summary.get("users", 0) - 1, 0),
+                    "pronosticos": installed_summary.get("predictions", 0),
+                    "partidos": installed_summary.get("matches", 0),
+                }
+                st.cache_resource.clear()
+                st.rerun()
+            except Exception as exc:
+                st.error(f"No se pudo restaurar el respaldo SQL. Detalle: {exc}")
+
+    if "pre_restore_sql_backup" in st.session_state:
+        st.success("La restauración terminó. Conserva también la copia automática anterior.")
         st.download_button(
             "⬇️ Descargar copia automática anterior",
-            data=st.session_state["pre_restore_backup"],
-            file_name=st.session_state.get("pre_restore_backup_name", "quiniela_antes_de_restaurar.db"),
-            mime="application/octet-stream",
+            data=st.session_state["pre_restore_sql_backup"],
+            file_name=st.session_state.get(
+                "pre_restore_sql_backup_name", "quiniela_antes_de_restaurar.sql"
+            ),
+            mime="application/sql",
             use_container_width=True,
-            key="download_pre_restore_backup",
+            key="download_pre_restore_sql_backup",
         )
 
+    with st.expander("Migrar un respaldo antiguo de SQLite (.db)"):
+        st.caption(
+            "Esta opción se conserva únicamente para importar respaldos anteriores a la migración. "
+            "Los nuevos respaldos deben hacerse con el botón SQL de arriba."
+        )
+        legacy = st.file_uploader(
+            "Selecciona un respaldo antiguo (.db)",
+            type=["db", "sqlite", "sqlite3"],
+            key="legacy_sqlite_uploader",
+        )
+        if legacy is not None:
+            legacy_bytes = legacy.getvalue()
+            try:
+                with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as temp_file:
+                    temp_file.write(legacy_bytes)
+                    temp_path = Path(temp_file.name)
+                try:
+                    legacy_summary = inspect_backup_file(temp_path)
+                finally:
+                    temp_path.unlink(missing_ok=True)
+                st.success("El respaldo antiguo es válido.")
+                legacy_confirmation = st.text_input(
+                    'Para migrarlo, escribe exactamente: MIGRAR',
+                    key="legacy_sqlite_confirmation",
+                )
+                if st.button(
+                    "Migrar respaldo antiguo a Supabase",
+                    disabled=legacy_confirmation.strip().upper() != "MIGRAR",
+                    use_container_width=True,
+                    key="legacy_sqlite_restore_button",
+                ):
+                    rollback_bytes, _ = restore_database_from_bytes(legacy_bytes)
+                    st.session_state["pre_restore_sql_backup"] = create_postgres_sql_backup_bytes()
+                    st.session_state["pre_restore_sql_backup_name"] = "quiniela_despues_de_migrar_sqlite.sql"
+                    st.cache_resource.clear()
+                    st.rerun()
+            except Exception as exc:
+                st.error(f"No se pudo migrar el respaldo antiguo: {exc}")
 
 def inject_style():
     st.markdown("""
