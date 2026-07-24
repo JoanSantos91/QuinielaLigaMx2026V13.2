@@ -12,13 +12,11 @@ from zoneinfo import ZoneInfo
 
 import pandas as pd
 import streamlit as st
-import streamlit.components.v1 as components
 from PIL import Image, ImageDraw, ImageFont
 
 from schedule_data import PLAYER_PINS, SCHEDULE
 
 APP_NAME = "Quiniela Joan Santos"
-EXPORT_VERSION = "2026-07-24-exact-html-v3"
 DB_PATH = Path(__file__).with_name("quiniela.db")
 ASSETS = Path(__file__).with_name("assets")
 TZ = ZoneInfo("America/Mexico_City")
@@ -354,7 +352,7 @@ def standings():
 
 
 
-def rank_table_html(df, title="Tabla general"):
+def render_rank_table(df, title="Tabla general"):
     rows=[]
     for _,r in df.iterrows():
         team_full=next((team for _,name,team in PLAYERS if name==r["JUGADOR"]), r.get("EQUIPO",""))
@@ -368,16 +366,13 @@ def rank_table_html(df, title="Tabla general"):
         extra = f'<span class="tie-info">Exactos: {int(r.get("EXACTOS",0))}</span>' if "EXACTOS" in r else ""
         rows.append(f'<tr class="{cls}"><td class="rank-pos">{pos}</td><td class="rank-participant"><div class="club-cell"><img src="{logo}" alt="{team_full}"><span class="participant-text"><b class="participant-name">{r["JUGADOR"]}</b><small style="color:#667085;font-weight:600">{TEAM_SHORT.get(team_full,team_full)} {extra}</small></span></div></td><td class="pts rank-number">{points}</td><td class="rank-number">{gf}</td><td class="rank-number">{gc}</td><td class="rank-number">{dif:+d}</td></tr>')
     legend='<div class="table-legend"><span><i class="legend-bar"></i>Top 8: clasifica a elección de campeón</span><span>Desempate: puntos, DIF, GF y exactos</span></div>' if title.lower().startswith("tabla general") else ''
-    return f'<div class="table-title"><h3>{title}</h3><span class="table-pill">Actualizada en tiempo real</span></div>{legend}<div class="pro-table-wrap"><table class="rank-table"><colgroup><col style="width:48px"><col style="width:250px"><col style="width:52px"><col style="width:52px"><col style="width:52px"><col style="width:52px"></colgroup><thead><tr><th>POS.</th><th>PARTICIPANTE</th><th>PTS</th><th>GF</th><th>GC</th><th>DIF</th></tr></thead><tbody>{"".join(rows)}</tbody></table></div>'
+    html=f'<div class="table-title"><h3>{title}</h3><span class="table-pill">Actualizada en tiempo real</span></div>{legend}<div class="pro-table-wrap"><table class="rank-table"><colgroup><col style="width:48px"><col style="width:250px"><col style="width:52px"><col style="width:52px"><col style="width:52px"><col style="width:52px"></colgroup><thead><tr><th>POS.</th><th>PARTICIPANTE</th><th>PTS</th><th>GF</th><th>GC</th><th>DIF</th></tr></thead><tbody>{"".join(rows)}</tbody></table></div>'
+    st.markdown(html,unsafe_allow_html=True)
 
 
-def render_rank_table(df, title="Tabla general"):
-    st.markdown(rank_table_html(df, title),unsafe_allow_html=True)
-
-
-def pro_table_html(df, title, rank_col="POS", team_by_player=True, qualifier_top8=False):
+def render_pro_table(df, title, rank_col="POS", team_by_player=True, qualifier_top8=False):
     if df is None or df.empty:
-        return ""
+        st.info("Todavía no hay información disponible."); return
     visible=df.copy()
     cols=list(visible.columns)
     def col_class(col):
@@ -399,14 +394,7 @@ def pro_table_html(df, title, rank_col="POS", team_by_player=True, qualifier_top
             if isinstance(val,float): val=f'{val:g}'
             cells.append(f'<td class="{col_class(col)}">{val}</td>')
         body.append(f'<tr class="{cls}">{"".join(cells)}</tr>')
-    return f'<div class="table-title"><h3>{title}</h3></div><div class="pro-table-wrap"><table class="pro-table"><thead><tr>{headers}</tr></thead><tbody>{"".join(body)}</tbody></table></div>'
-
-
-def render_pro_table(df, title, rank_col="POS", team_by_player=True, qualifier_top8=False):
-    if df is None or df.empty:
-        st.info("Todavía no hay información disponible."); return
-    st.markdown(pro_table_html(df, title, rank_col, team_by_player, qualifier_top8),unsafe_allow_html=True)
-
+    st.markdown(f'<div class="table-title"><h3>{title}</h3></div><div class="pro-table-wrap"><table class="pro-table"><thead><tr>{headers}</tr></thead><tbody>{"".join(body)}</tbody></table></div>',unsafe_allow_html=True)
 
 def round_submission_status(round_id):
     with conn() as c:
@@ -458,105 +446,115 @@ def _prediction_cell(prediction, match):
 
 
 
-EXACT_EXPORT_CSS = r"""
-:root{--mx-green:#00A94F;--mx-pink:#E6007E;--mx-navy:#071426;--mx-blue:#123B68;--mx-bg:#F2F6FB;--mx-card:#FFFFFF;--mx-text:#101828;--mx-muted:#667085;--mx-border:#D7E0EA}
-*{box-sizing:border-box} body{margin:0;background:#f8fafc;color:var(--mx-text);font-family:Arial,Helvetica,sans-serif}.capture-shell{display:inline-block;padding:26px 30px 30px;background:linear-gradient(180deg,#eef4fa 0,#f8fafc 280px);min-width:max-content}
-.table-title{display:flex;align-items:center;justify-content:space-between;margin:.3rem 0 .8rem}.table-title h3{margin:0;font-size:1.2rem}.table-pill{background:var(--mx-navy);color:#fff;padding:5px 10px;border-radius:999px;font-size:.75rem;font-weight:800}
-.rank-table{border-collapse:separate;border-spacing:0 7px;table-layout:fixed;width:auto;min-width:520px;margin:0 auto}.rank-table th{padding:7px 5px;color:#667085;font-size:.74rem;text-transform:uppercase;text-align:center;white-space:nowrap}.rank-table th:nth-child(2){text-align:left}.rank-table td{padding:10px;background:#fff;border-top:1px solid #e2e8f0;border-bottom:1px solid #e2e8f0}.rank-table td:first-child{border-left:4px solid var(--mx-green);border-radius:12px 0 0 12px;text-align:center;font-weight:950}.rank-table td:last-child{border-right:1px solid #e2e8f0;border-radius:0 12px 12px 0}.rank-table tr.top1 td{background:linear-gradient(90deg,#2f741e,#3f8b29);color:#fff;border-color:#28651a}.rank-table tr.top1 small{color:#e8f7df!important}.rank-table tr.top2 td{background:linear-gradient(90deg,#1763a4,#2776b9);color:#fff;border-color:#15568e}.rank-table tr.top2 small{color:#e2f2ff!important}.rank-table tr.top3 td{background:linear-gradient(90deg,#4a86df,#5a97ec);color:#fff;border-color:#3c76c8}.rank-table tr.top3 small{color:#edf5ff!important}.rank-table tr.alt td{background:#f0f3f6}.rank-table tr.base td{background:#fff}.rank-table tr.qualifier td:first-child{border-left:7px solid #11a8ff}.rank-table .rank-pos{width:48px}.rank-table .rank-participant{width:250px;max-width:250px;text-align:left;padding-left:8px;padding-right:8px}.rank-table .rank-number{width:52px;text-align:center!important;font-variant-numeric:tabular-nums;padding-left:4px;padding-right:4px}.rank-table .club-cell{display:grid;grid-template-columns:42px minmax(0,1fr);align-items:center;gap:8px;width:100%}.rank-table .club-cell img{width:42px;height:42px;object-fit:contain}.participant-text{display:block;line-height:1.14;text-align:left}.participant-name{display:block;line-height:1.15;font-size:1.02rem;font-weight:900}.participant-text small{display:block;margin-top:3px;line-height:1.15;font-size:.68rem}.pts{font-size:1.05rem;font-weight:950;color:var(--mx-navy)}.rank-table tr.top1 .pts,.rank-table tr.top2 .pts,.rank-table tr.top3 .pts{color:#fff}
-.pro-table-wrap{width:max-content;padding-bottom:4px}.pro-table{border-collapse:separate;border-spacing:0 6px;table-layout:auto;width:max-content;min-width:100%}.pro-table th{background:var(--mx-navy);color:#fff;padding:9px 10px;text-transform:uppercase;font-size:.72rem;letter-spacing:.04em;text-align:center;white-space:nowrap}.pro-table th:first-child{border-radius:10px 0 0 10px}.pro-table th:last-child{border-radius:0 10px 10px 0}.pro-table td{padding:9px 10px;text-align:center;border-top:1px solid #dce4ed;border-bottom:1px solid #dce4ed;background:#fff;white-space:nowrap}.pro-table tbody tr:nth-child(even) td{background:#f0f3f6}.pro-table td:first-child{border-left:4px solid var(--mx-green);border-radius:10px 0 0 10px}.pro-table td:last-child{border-right:1px solid #dce4ed;border-radius:0 10px 10px 0}.pro-table .podium-1 td{background:#2f741e!important;color:#fff}.pro-table .podium-2 td{background:#1763a4!important;color:#fff}.pro-table .podium-3 td{background:#4a86df!important;color:#fff}.pro-table .qualifier td:first-child{border-left:7px solid #11a8ff}.pro-table td:nth-child(2),.pro-table th:nth-child(2){text-align:left}.player-cell{display:flex;align-items:center;justify-content:flex-start;gap:10px;min-width:220px;text-align:left}.mini-logo{display:block;width:52px;height:52px;min-width:52px;object-fit:contain}.player-cell b{display:block;text-align:left}.table-legend{display:flex;gap:12px;flex-wrap:wrap;margin:4px 0 10px;color:#475467;font-size:.78rem}.legend-bar{display:inline-block;width:6px;height:15px;background:#11a8ff;border-radius:4px;vertical-align:middle;margin-right:5px}
-.pred{display:inline-block;min-width:48px;padding:5px 8px;border-radius:9px;font-weight:900;white-space:nowrap}.pred.exact{background:#d9fbe8;color:#087443;border:1px solid #83ddb0}.pred.winner{background:#fff4c7;color:#785900;border:1px solid #e8cf62}.pred.wrong{background:#f3f4f6;color:#475467;border:1px solid #d0d5dd}.pred.pending{background:#eef2f6;color:#667085;border:1px solid #d7dee7}.official-score{font-size:.67rem;font-weight:700;color:#d9e5f2;white-space:nowrap}.prediction-legend{display:flex;gap:7px;flex-wrap:wrap;margin:10px 0}.prediction-legend .pred{font-size:.74rem;min-width:0}
-"""
+def _font(size=28, bold=False):
+    """Fuente segura para generar imágenes descargables en Streamlit Cloud."""
+    candidates = [
+        "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf" if bold else "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+        "/usr/share/fonts/truetype/liberation2/LiberationSans-Bold.ttf" if bold else "/usr/share/fonts/truetype/liberation2/LiberationSans-Regular.ttf",
+    ]
+    for candidate in candidates:
+        if Path(candidate).exists():
+            return ImageFont.truetype(candidate, size)
+    return ImageFont.load_default()
 
 
-def exact_image_download_button(html_fragment, filename, label, key, preface_html=""):
-    """Descarga en PNG el mismo fragmento HTML que se muestra en la app.
+def _plain_text(value):
+    """Convierte contenido HTML sencillo de las tablas a texto para la imagen."""
+    import re
+    text = str(value)
+    text = re.sub(r"<br\s*/?>", "\n", text, flags=re.I)
+    text = re.sub(r"<[^>]+>", "", text)
+    return (text.replace("&nbsp;", " ").replace("&amp;", "&")
+                .replace("&#x27;", "'").replace("&quot;", '"').strip())
 
-    El contenido exportado reutiliza exactamente rank_table_html/pro_table_html y
-    el mismo CSS visual. html2canvas pinta el DOM real (incluidos gradientes,
-    bordes, logos en base64 y tamaños) en vez de reconstruir un DataFrame.
-    """
-    safe_filename = filename.replace('"', '').replace("'", "")
-    export_markup = preface_html + html_fragment
-    export_b64 = base64.b64encode(export_markup.encode("utf-8")).decode("ascii")
-    css_b64 = base64.b64encode(EXACT_EXPORT_CSS.encode("utf-8")).decode("ascii")
 
-    component = f"""
-    <script src="https://cdn.jsdelivr.net/npm/html2canvas@1.4.1/dist/html2canvas.min.js"></script>
-    <style>
-      *{{box-sizing:border-box}}
-      html,body{{margin:0;padding:0;background:transparent;font-family:Arial,Helvetica,sans-serif}}
-      .export-button{{width:100%;min-height:44px;border:1px solid #d7e0ea;border-radius:12px;background:#fff;color:#101828;font-weight:850;cursor:pointer;padding:10px 14px}}
-      .export-button:hover{{border-color:#00A94F;color:#075f43}}
-      .export-button:disabled{{opacity:.65;cursor:wait}}
-      .export-status{{font-size:12px;color:#667085;margin-top:5px;text-align:center;min-height:15px}}
-      #export-stage-{key}{{position:fixed;left:-100000px;top:0;z-index:-1;display:block;background:#f8fafc}}
-    </style>
-    <button class="export-button" id="export-button-{key}" type="button">{label}</button>
-    <div class="export-status" id="export-status-{key}"></div>
-    <div id="export-stage-{key}"></div>
-    <script>
-    (() => {{
-      const button = document.getElementById('export-button-{key}');
-      const status = document.getElementById('export-status-{key}');
-      const stage = document.getElementById('export-stage-{key}');
-      const markup = decodeURIComponent(escape(atob('{export_b64}')));
-      const tableCss = decodeURIComponent(escape(atob('{css_b64}')));
+def dataframe_png(df, title, kind="general"):
+    """Genera una PNG con el estilo visual de las tablas sin modificar la interfaz."""
+    if df is None or df.empty:
+        return None
+    data = df.copy()
+    data.columns = [_plain_text(c).replace("\n", " ") for c in data.columns]
+    for c in data.columns:
+        data[c] = data[c].map(_plain_text)
 
-      const waitForImages = async root => {{
-        const images = Array.from(root.querySelectorAll('img'));
-        await Promise.all(images.map(img => {{
-          if (img.complete && img.naturalWidth > 0) return Promise.resolve();
-          return new Promise(resolve => {{
-            img.addEventListener('load', resolve, {{once:true}});
-            img.addEventListener('error', resolve, {{once:true}});
-            setTimeout(resolve, 3000);
-          }});
-        }}));
-      }};
+    title_font = _font(38, True)
+    header_font = _font(20, True)
+    cell_font = _font(20, False)
+    bold_font = _font(20, True)
+    small_font = _font(16, False)
 
-      button.addEventListener('click', async () => {{
-        button.disabled = true;
-        status.textContent = 'Generando imagen…';
-        try {{
-          stage.innerHTML = `<style>${{tableCss}}</style><div class="capture-shell">${{markup}}</div>`;
-          const node = stage.querySelector('.capture-shell');
-          await waitForImages(node);
-          if (document.fonts && document.fonts.ready) await document.fonts.ready;
-          await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+    # Anchos diseñados para conservar legibilidad en tablas amplias.
+    widths=[]
+    for col in data.columns:
+        if col in ("PARTICIPANTE", "JUGADOR"):
+            widths.append(260)
+        elif kind == "predictions":
+            widths.append(175 if col != "SURVIVOR" else 190)
+        else:
+            widths.append(max(95, min(230, 18 * max(len(str(col)), int(data[col].astype(str).str.len().max())))))
+    row_h = 62 if kind == "predictions" else 54
+    header_h = 96 if kind == "predictions" else 62
+    pad=34
+    width=max(1000, sum(widths)+pad*2)
+    height=150+header_h+row_h*len(data)+70
+    img=Image.new("RGB", (width,height), "#f4f6f8")
+    d=ImageDraw.Draw(img)
 
-          if (typeof html2canvas !== 'function') throw new Error('html2canvas no cargó');
-          const canvas = await html2canvas(node, {{
-            backgroundColor: '#f8fafc',
-            scale: 2,
-            useCORS: true,
-            allowTaint: true,
-            logging: false,
-            width: node.scrollWidth,
-            height: node.scrollHeight,
-            windowWidth: node.scrollWidth,
-            windowHeight: node.scrollHeight,
-            scrollX: 0,
-            scrollY: 0
-          }});
-          const link = document.createElement('a');
-          link.download = '{safe_filename}';
-          link.href = canvas.toDataURL('image/png');
-          document.body.appendChild(link);
-          link.click();
-          link.remove();
-          status.textContent = 'Imagen descargada';
-        }} catch (error) {{
-          console.error(error);
-          status.textContent = 'No se pudo generar la imagen. Recarga e intenta nuevamente.';
-        }} finally {{
-          button.disabled = false;
-          stage.innerHTML = '';
-        }}
-      }});
-    }})();
-    </script>
-    """
-    components.html(component, height=74, scrolling=False)
+    # Encabezado principal.
+    d.rounded_rectangle((20,18,width-20,116), radius=24, fill="#111827")
+    d.text((42,43), title, font=title_font, fill="white")
+    d.text((width-335,58), "Actualizada en tiempo real", font=small_font, fill="#d1d5db")
+
+    x=pad; y=136
+    # Encabezados de columnas.
+    for col,w in zip(data.columns,widths):
+        d.rectangle((x,y,x+w,y+header_h), fill="#202a44")
+        label=str(col)
+        # En pronósticos se divide el encabezado en dos líneas si contiene “vs”.
+        if kind == "predictions" and " vs " in label:
+            parts=label.split(" Oficial: ")
+            main=parts[0]
+            official=("Oficial: "+parts[1]) if len(parts)>1 else ""
+            bbox=d.multiline_textbbox((0,0),main,font=header_font,spacing=4,align="center")
+            tw=bbox[2]-bbox[0]
+            d.multiline_text((x+(w-tw)/2,y+16),main,font=header_font,fill="white",spacing=4,align="center")
+            if official:
+                bbox2=d.textbbox((0,0),official,font=small_font)
+                d.text((x+(w-(bbox2[2]-bbox2[0]))/2,y+66),official,font=small_font,fill="#facc15")
+        else:
+            bbox=d.textbbox((0,0),label,font=header_font)
+            d.text((x+(w-(bbox[2]-bbox[0]))/2,y+(header_h-(bbox[3]-bbox[1]))/2-2),label,font=header_font,fill="white")
+        x+=w
+
+    # Filas, respetando podio/top 8 y alternancia visual de la app.
+    y += header_h
+    for ridx,(_,row) in enumerate(data.iterrows()):
+        pos=None
+        if "POS" in data.columns:
+            try: pos=int(float(row["POS"]))
+            except Exception: pass
+        if pos == 1: fill="#fff2b2"
+        elif pos == 2: fill="#e5e7eb"
+        elif pos == 3: fill="#f4c7a1"
+        elif pos and pos <= 8: fill="#e9f7ef"
+        else: fill="#ffffff" if ridx%2==0 else "#f8fafc"
+        x=pad
+        for cidx,(col,w) in enumerate(zip(data.columns,widths)):
+            d.rectangle((x,y,x+w,y+row_h), fill=fill, outline="#d9dee7", width=1)
+            val=str(row[col])
+            font=bold_font if col in ("PARTICIPANTE","JUGADOR","TOTAL","PTS") else cell_font
+            # Ajuste simple de texto largo.
+            if len(val)>20 and "\n" not in val:
+                val=val[:18]+"…"
+            bbox=d.multiline_textbbox((0,0),val,font=font,spacing=3,align="center")
+            tw,th=bbox[2]-bbox[0],bbox[3]-bbox[1]
+            d.multiline_text((x+(w-tw)/2,y+(row_h-th)/2-2),val,font=font,fill="#111827",spacing=3,align="center")
+            x+=w
+        y+=row_h
+
+    d.text((pad,height-44), "Quiniela Joan Santos · Apertura 2026", font=small_font, fill="#667085")
+    out=io.BytesIO(); img.save(out,format="PNG",optimize=True); return out.getvalue()
+
 
 def database_backup_bytes():
     """Crea una copia SQLite consistente, incluso cuando la base usa WAL."""
@@ -686,11 +684,10 @@ def public_predictions(round_id):
     st.markdown(f'<div class="privacy-open">{message}</div>', unsafe_allow_html=True)
     st.markdown('<div class="prediction-legend"><span class="pred exact">Exacto · 2 pts</span><span class="pred winner">Ganador/empate · 1 pt</span><span class="pred wrong">Sin puntos</span><span class="pred pending">Pendiente</span></div>', unsafe_allow_html=True)
     title=f'Pronósticos del grupo · Jornada {round_row["number"]}'
-    predictions_df = pd.DataFrame(rows)
-    render_pro_table(predictions_df, title, rank_col="", team_by_player=True)
-    predictions_html = pro_table_html(predictions_df, title, rank_col="", team_by_player=True)
-    legend_html = '<div class="prediction-legend"><span class="pred exact">Exacto · 2 pts</span><span class="pred winner">Ganador/empate · 1 pt</span><span class="pred wrong">Sin puntos</span><span class="pred pending">Pendiente</span></div>'
-    exact_image_download_button(predictions_html, f"pronosticos_jornada_{round_row['number']}.png", "🖼️ Descargar imagen de todos los pronósticos", f"download_predictions_{round_id}", legend_html)
+    render_pro_table(pd.DataFrame(rows), title, rank_col="", team_by_player=True)
+    png=dataframe_png(pd.DataFrame(image_rows),title,kind="predictions")
+    if png:
+        st.download_button("🖼️ Descargar imagen de todos los pronósticos",png,f"pronosticos_jornada_{round_row['number']}.png","image/png",use_container_width=True,key=f"download_predictions_{round_id}")
 
 
 def login():
@@ -991,21 +988,13 @@ def player_view(user):
         public_predictions(round_row["id"])
     elif section == "Survivor":
         st.info("La elección Survivor se envía junto con los pronósticos.")
-        survivor_df=survivor_status()
-        render_pro_table(survivor_df, "Tabla Survivor")
-        exact_image_download_button(pro_table_html(survivor_df,"Tabla Survivor"), "tabla_survivor.png", "🖼️ Descargar imagen de Survivor", "player_download_survivor")
+        render_pro_table(survivor_status(), "Tabla Survivor")
     elif section == "Tabla":
-        table_df=standings()
-        render_rank_table(table_df, "Tabla general de la quiniela")
-        exact_image_download_button(rank_table_html(table_df,"Tabla general de la quiniela"), "tabla_general_quiniela.png", "🖼️ Descargar imagen de la tabla general", "player_download_general")
+        render_rank_table(standings(), "Tabla general de la quiniela")
     elif section == "Duelos":
-        duel_df=duel_standings()
-        render_pro_table(duel_df, "Tabla general de duelos")
-        exact_image_download_button(pro_table_html(duel_df,"Tabla general de duelos"), "tabla_general_duelos.png", "🖼️ Descargar imagen de la tabla de duelos", "player_download_duels")
+        render_pro_table(duel_standings(), "Tabla general de duelos")
         journey=st.selectbox("Detalle de jornada",range(1,18),key="player_duel_round")
-        detail_df=pd.DataFrame(duels_round(journey))
-        render_pro_table(detail_df, f"Duelos · Jornada {journey}", rank_col="", team_by_player=False)
-        exact_image_download_button(pro_table_html(detail_df,f"Duelos · Jornada {journey}",rank_col="",team_by_player=False), f"duelos_jornada_{journey}.png", "🖼️ Descargar imagen de esta jornada", f"player_download_duel_round_{journey}")
+        render_pro_table(pd.DataFrame(duels_round(journey)), f"Duelos · Jornada {journey}", rank_col="", team_by_player=False)
     else:
         champion_view(user=user)
 
@@ -1150,19 +1139,19 @@ def admin_view():
     elif section == "Tabla":
         table_df=standings()
         render_rank_table(table_df,"Tabla general de la quiniela")
-        exact_image_download_button(rank_table_html(table_df,"Tabla general de la quiniela"), "tabla_general_quiniela.png", "🖼️ Descargar imagen de la tabla general", "download_general_table")
+        png=dataframe_png(table_df.drop(columns=["USER_ID"],errors="ignore"),"Tabla general de la quiniela",kind="general")
+        if png:
+            st.download_button("🖼️ Descargar imagen de la tabla general",png,"tabla_general_quiniela.png","image/png",use_container_width=True)
     elif section == "Duelos":
         duel_df=duel_standings()
         render_pro_table(duel_df,"Tabla general de duelos")
-        exact_image_download_button(pro_table_html(duel_df,"Tabla general de duelos"), "tabla_general_duelos.png", "🖼️ Descargar imagen de la tabla de duelos", "download_duels_table")
+        png=dataframe_png(duel_df,"Tabla general de duelos",kind="duels")
+        if png:
+            st.download_button("🖼️ Descargar imagen de la tabla de duelos",png,"tabla_general_duelos.png","image/png",use_container_width=True)
         journey=st.selectbox("Jornada de duelos",range(1,18),key="admin_duel_round")
-        detail_df=pd.DataFrame(duels_round(journey))
-        render_pro_table(detail_df,f"Duelos · Jornada {journey}",rank_col="",team_by_player=False)
-        exact_image_download_button(pro_table_html(detail_df,f"Duelos · Jornada {journey}",rank_col="",team_by_player=False), f"duelos_jornada_{journey}.png", "🖼️ Descargar imagen de esta jornada", f"admin_download_duel_round_{journey}")
+        render_pro_table(pd.DataFrame(duels_round(journey)),f"Duelos · Jornada {journey}",rank_col="",team_by_player=False)
     elif section == "Survivor":
-        survivor_df=survivor_status()
-        render_pro_table(survivor_df,"Tabla Survivor")
-        exact_image_download_button(pro_table_html(survivor_df,"Tabla Survivor"), "tabla_survivor.png", "🖼️ Descargar imagen de Survivor", "admin_download_survivor")
+        render_pro_table(survivor_status(),"Tabla Survivor")
     elif section == "Campeón":
         render_pro_table(champion_order().drop(columns=["USER_ID"]),"Orden de elección",qualifier_top8=True)
         with conn() as c:
