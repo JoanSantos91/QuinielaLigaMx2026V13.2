@@ -191,15 +191,15 @@ def init_db():
         name TEXT,
         team TEXT,
         pin_hash TEXT,
-        is_admin BOOLEAN DEFAULT FALSE
+        is_admin INTEGER NOT NULL DEFAULT 0
     );
     CREATE TABLE IF NOT EXISTS rounds(
         id BIGSERIAL PRIMARY KEY,
         number INTEGER UNIQUE NOT NULL,
         name TEXT,
         deadline TEXT,
-        is_open BOOLEAN DEFAULT FALSE,
-        reveal_override BOOLEAN DEFAULT FALSE
+        is_open INTEGER NOT NULL DEFAULT 0,
+        reveal_override INTEGER NOT NULL DEFAULT 0
     );
     CREATE TABLE IF NOT EXISTS matches(
         id BIGSERIAL PRIMARY KEY,
@@ -238,12 +238,16 @@ def init_db():
         pick_order INTEGER,
         submitted_at TEXT
     );
-    ALTER TABLE rounds ADD COLUMN IF NOT EXISTS reveal_override BOOLEAN DEFAULT FALSE;
+    ALTER TABLE rounds ADD COLUMN IF NOT EXISTS reveal_override INTEGER NOT NULL DEFAULT 0;
     """
     with conn() as c:
         for statement in schema.split(";"):
             if statement.strip():
                 c.execute(statement)
+
+        # Esta versión usa 0/1 porque la base de Supabase existente tiene
+        # users.is_admin, rounds.is_open y rounds.reveal_override como INTEGER.
+        # Si reveal_override todavía no existe, el ALTER anterior lo crea como INTEGER.
 
         c.execute(
             """INSERT INTO users(code,name,team,pin_hash,is_admin)
@@ -255,7 +259,7 @@ def init_db():
         for code, name, team in PLAYERS:
             c.execute(
                 """INSERT INTO users(code,name,team,pin_hash,is_admin)
-                   VALUES(?,?,?,?,FALSE) ON CONFLICT(code) DO NOTHING""",
+                   VALUES(?,?,?,?,0) ON CONFLICT(code) DO NOTHING""",
                 (code, name, team, hash_pin(PLAYER_PINS[code])),
             )
             c.execute(
@@ -267,7 +271,7 @@ def init_db():
             deadline = min(datetime.fromisoformat(game[0]) for game in games).isoformat(timespec="minutes")
             c.execute(
                 """INSERT INTO rounds(number,name,deadline,is_open)
-                   VALUES(?,?,?,FALSE) ON CONFLICT(number) DO NOTHING""",
+                   VALUES(?,?,?,0) ON CONFLICT(number) DO NOTHING""",
                 (number, f"Jornada {number}", deadline),
             )
             round_id = c.execute("SELECT id FROM rounds WHERE number=?", (number,)).fetchone()["id"]
@@ -287,7 +291,7 @@ def init_db():
                 deadline = min(datetime.fromisoformat(game[0]) for game in games).isoformat(timespec="minutes")
                 c.execute(
                     """INSERT INTO rounds(number,name,deadline,is_open,reveal_override)
-                       VALUES(?,?,?,FALSE,FALSE) ON CONFLICT(number) DO UPDATE SET
+                       VALUES(?,?,?,0,0) ON CONFLICT(number) DO UPDATE SET
                        name=EXCLUDED.name, deadline=EXCLUDED.deadline""",
                     (int(number), f"Jornada {number}", deadline),
                 )
@@ -310,8 +314,8 @@ def init_db():
 
 
 _SQLITE_SCHEMA = """
-CREATE TABLE users(id INTEGER PRIMARY KEY,code TEXT UNIQUE,name TEXT,team TEXT,pin_hash TEXT,is_admin BOOLEAN DEFAULT FALSE);
-CREATE TABLE rounds(id INTEGER PRIMARY KEY,number INTEGER UNIQUE,name TEXT,deadline TEXT,is_open BOOLEAN DEFAULT FALSE,reveal_override BOOLEAN DEFAULT FALSE);
+CREATE TABLE users(id INTEGER PRIMARY KEY,code TEXT UNIQUE,name TEXT,team TEXT,pin_hash TEXT,is_admin INTEGER NOT NULL DEFAULT 0);
+CREATE TABLE rounds(id INTEGER PRIMARY KEY,number INTEGER UNIQUE,name TEXT,deadline TEXT,is_open INTEGER NOT NULL DEFAULT 0,reveal_override INTEGER NOT NULL DEFAULT 0);
 CREATE TABLE matches(id INTEGER PRIMARY KEY,round_id INTEGER,home_team TEXT,away_team TEXT,kickoff TEXT,home_score INTEGER,away_score INTEGER,UNIQUE(round_id,home_team,away_team));
 CREATE TABLE predictions(id INTEGER PRIMARY KEY,user_id INTEGER,match_id INTEGER,home_score INTEGER,away_score INTEGER,submitted_at TEXT,UNIQUE(user_id,match_id));
 CREATE TABLE survivor_picks(id INTEGER PRIMARY KEY,user_id INTEGER,round_id INTEGER,team TEXT,submitted_at TEXT,UNIQUE(user_id,round_id),UNIQUE(user_id,team));
@@ -471,7 +475,7 @@ def inspect_backup_file(path: Path) -> dict:
             raise ValueError("Faltan tablas necesarias: " + ", ".join(missing))
         summary = {
             "usuarios": _scalar(connection.execute("SELECT COUNT(*) FROM users").fetchone()),
-            "participantes": _scalar(connection.execute("SELECT COUNT(*) FROM users WHERE is_admin=FALSE").fetchone()),
+            "participantes": _scalar(connection.execute("SELECT COUNT(*) FROM users WHERE is_admin=0").fetchone()),
             "jornadas": _scalar(connection.execute("SELECT COUNT(*) FROM rounds").fetchone()),
             "partidos": _scalar(connection.execute("SELECT COUNT(*) FROM matches").fetchone()),
             "pronosticos": _scalar(connection.execute("SELECT COUNT(*) FROM predictions").fetchone()),
@@ -531,7 +535,7 @@ def restore_database_from_bytes(uploaded_bytes: bytes) -> tuple[bytes, dict]:
                         for col in columns:
                             value = row.get(col)
                             if (table == "users" and col == "is_admin") or (table == "rounds" and col in {"is_open", "reveal_override"}):
-                                value = bool(value)
+                                value = 1 if bool(value) else 0
                             values.append(value)
                         converted_rows.append(tuple(values))
                     c.executemany(
@@ -814,7 +818,7 @@ def match_score_card(match, previous=None, locked=False, prefix="p"):
 
 def standings():
     with conn() as c:
-        users = c.execute("SELECT id,name,team FROM users WHERE is_admin=FALSE").fetchall()
+        users = c.execute("SELECT id,name,team FROM users WHERE is_admin=0").fetchall()
         rows = c.execute("""
             SELECT p.user_id,r.number jornada,p.home_score ph,p.away_score pa,
                    m.home_score rh,m.away_score ra
@@ -895,7 +899,7 @@ def round_submission_status(round_id):
         total_matches = _scalar(c.execute("SELECT COUNT(*) FROM matches WHERE round_id=?", (round_id,)).fetchone())
         round_info = c.execute("SELECT number,reveal_override FROM rounds WHERE id=?", (round_id,)).fetchone()
         round_number = round_info["number"]
-        users = c.execute("SELECT id,name FROM users WHERE is_admin=FALSE ORDER BY name").fetchall()
+        users = c.execute("SELECT id,name FROM users WHERE is_admin=0 ORDER BY name").fetchall()
         counts = {row["user_id"]: row["n"] for row in c.execute("""
             SELECT p.user_id, COUNT(*) n FROM predictions p
             JOIN matches m ON m.id=p.match_id WHERE m.round_id=? GROUP BY p.user_id
@@ -953,7 +957,7 @@ def public_predictions(round_id):
     with conn() as c:
         matches = c.execute("SELECT * FROM matches WHERE round_id=? ORDER BY kickoff", (round_id,)).fetchall()
         round_row = c.execute("SELECT number FROM rounds WHERE id=?", (round_id,)).fetchone()
-        users = c.execute("SELECT id,name FROM users WHERE is_admin=FALSE ORDER BY CASE WHEN name='Joan Santos' THEN 0 ELSE 1 END,name").fetchall()
+        users = c.execute("SELECT id,name FROM users WHERE is_admin=0 ORDER BY CASE WHEN name='Joan Santos' THEN 0 ELSE 1 END,name").fetchall()
         predictions = c.execute("""
             SELECT p.user_id,p.match_id,p.home_score,p.away_score FROM predictions p
             JOIN matches m ON m.id=p.match_id WHERE m.round_id=?
@@ -1045,7 +1049,7 @@ def login():
                         is_admin = code == "ADMIN"
                         c.execute(
                             "INSERT INTO users(code,name,team,pin_hash,is_admin) VALUES(?,?,?,?,?)",
-                            (code, name, team, hash_pin(expected_pin), is_admin),
+                            (code, name, team, hash_pin(expected_pin), 1 if is_admin else 0),
                         )
                         user = c.execute(
                             "SELECT * FROM users WHERE code=?",
@@ -1087,7 +1091,7 @@ def round_complete(journey):
 
 def duels_round(journey):
     with conn() as c:
-        users = {u["team"]:u for u in c.execute("SELECT id,name,team FROM users WHERE is_admin=FALSE")}
+        users = {u["team"]:u for u in c.execute("SELECT id,name,team FROM users WHERE is_admin=0")}
         games = c.execute("""SELECT m.home_team,m.away_team FROM matches m JOIN rounds r ON r.id=m.round_id
                              WHERE r.number=? ORDER BY m.id""", (journey,)).fetchall()
     output = []
@@ -1157,7 +1161,7 @@ def survivor_lives(user_id, round_number=None):
 
 def survivor_status():
     with conn() as c:
-        users=c.execute("SELECT id,name,team FROM users WHERE is_admin=FALSE").fetchall()
+        users=c.execute("SELECT id,name,team FROM users WHERE is_admin=0").fetchall()
         picks=c.execute("""SELECT sp.user_id,sp.team,m.home_team,m.away_team,m.home_score,m.away_score
                            FROM survivor_picks sp JOIN rounds r ON r.id=sp.round_id
                            LEFT JOIN matches m ON m.round_id=r.id AND (m.home_team=sp.team OR m.away_team=sp.team)""").fetchall()
@@ -1402,7 +1406,7 @@ def admin_view():
         st.caption("Primero carga participante y jornada. Las casillas no recargarán la aplicación mientras escribes.")
         with conn() as c:
             rounds=c.execute("SELECT * FROM rounds ORDER BY number").fetchall()
-            players=c.execute("SELECT * FROM users WHERE is_admin=FALSE ORDER BY CASE WHEN name='Joan Santos' THEN 0 ELSE 1 END,name").fetchall()
+            players=c.execute("SELECT * FROM users WHERE is_admin=0 ORDER BY CASE WHEN name='Joan Santos' THEN 0 ELSE 1 END,name").fetchall()
         ro={f"Jornada {r['number']}":r for r in rounds}
         po={f"{u['name']} · {TEAM_SHORT.get(u['team'],u['team'])}":u for u in players}
         with st.form("manual_loader",clear_on_submit=False):
@@ -1448,7 +1452,7 @@ def admin_view():
         for r in rounds:
             a,b=st.columns([4,1]); a.write(f"**Jornada {r['number']}** · {'ABIERTA' if r['is_open'] else 'CERRADA'} · límite {r['deadline']}")
             if b.button("Cerrar" if r["is_open"] else "Activar",key=f"r{r['id']}"):
-                run_write(lambda c,rid=r["id"]: c.execute("UPDATE rounds SET is_open=NOT is_open WHERE id=?",(rid,)))
+                run_write(lambda c,rid=r["id"]: c.execute("UPDATE rounds SET is_open=CASE WHEN COALESCE(is_open,0)=1 THEN 0 ELSE 1 END WHERE id=?",(rid,)))
                 st.rerun()
     elif section == "Entregas":
         with conn() as c: rounds=c.execute("SELECT * FROM rounds ORDER BY number").fetchall()
@@ -1456,7 +1460,7 @@ def admin_view():
         status,complete,override=round_submission_status(r["id"]); ready=sum(x["ESTADO"]=="Listo" for x in status)
         a,b=st.columns(2); a.metric("Entregaron",f"{ready}/18"); b.metric("Publicación","Visible" if complete or override else "Bloqueada")
         if not complete and st.button("Revocar publicación anticipada" if override else "Autorizar publicación aunque falten jugadores",use_container_width=True):
-            run_write(lambda c: c.execute("UPDATE rounds SET reveal_override=? WHERE id=?",(not override,r["id"])))
+            run_write(lambda c: c.execute("UPDATE rounds SET reveal_override=? WHERE id=?",(0 if override else 1,r["id"])))
             st.rerun()
         render_pro_table(pd.DataFrame(status),"Control de entregas",rank_col="",team_by_player=True)
         public_predictions(r["id"])
