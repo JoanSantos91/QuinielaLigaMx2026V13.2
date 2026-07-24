@@ -74,6 +74,18 @@ def hash_pin(pin: str) -> str:
     return hashlib.sha256(pin.encode("utf-8")).hexdigest()
 
 
+def _scalar(row, default=0):
+    """Obtiene la primera columna de filas SQLite, tuplas o dict_row de psycopg."""
+    if row is None:
+        return default
+    if isinstance(row, dict):
+        return next(iter(row.values()), default)
+    try:
+        return row[0]
+    except (KeyError, IndexError, TypeError):
+        return default
+
+
 def _translate_sql(sql: str) -> str:
     """Convierte las consultas SQLite antiguas al formato de PostgreSQL."""
     statement = sql.strip()
@@ -344,7 +356,7 @@ def inspect_backup_file(path: Path) -> dict:
     try:
         connection = sqlite3.connect(path)
         connection.row_factory = sqlite3.Row
-        integrity = connection.execute("PRAGMA integrity_check").fetchone()[0]
+        integrity = _scalar(connection.execute("PRAGMA integrity_check").fetchone())
         if integrity != "ok":
             raise ValueError(f"El respaldo no pasó la revisión de integridad: {integrity}")
         tables = {row[0] for row in connection.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()}
@@ -352,13 +364,13 @@ def inspect_backup_file(path: Path) -> dict:
         if missing:
             raise ValueError("Faltan tablas necesarias: " + ", ".join(missing))
         summary = {
-            "usuarios": connection.execute("SELECT COUNT(*) FROM users").fetchone()[0],
-            "participantes": connection.execute("SELECT COUNT(*) FROM users WHERE is_admin=FALSE").fetchone()[0],
-            "jornadas": connection.execute("SELECT COUNT(*) FROM rounds").fetchone()[0],
-            "partidos": connection.execute("SELECT COUNT(*) FROM matches").fetchone()[0],
-            "pronosticos": connection.execute("SELECT COUNT(*) FROM predictions").fetchone()[0],
-            "survivor": connection.execute("SELECT COUNT(*) FROM survivor_picks").fetchone()[0],
-            "campeon": connection.execute("SELECT COUNT(*) FROM champion_picks").fetchone()[0],
+            "usuarios": _scalar(connection.execute("SELECT COUNT(*) FROM users").fetchone()),
+            "participantes": _scalar(connection.execute("SELECT COUNT(*) FROM users WHERE is_admin=FALSE").fetchone()),
+            "jornadas": _scalar(connection.execute("SELECT COUNT(*) FROM rounds").fetchone()),
+            "partidos": _scalar(connection.execute("SELECT COUNT(*) FROM matches").fetchone()),
+            "pronosticos": _scalar(connection.execute("SELECT COUNT(*) FROM predictions").fetchone()),
+            "survivor": _scalar(connection.execute("SELECT COUNT(*) FROM survivor_picks").fetchone()),
+            "campeon": _scalar(connection.execute("SELECT COUNT(*) FROM champion_picks").fetchone()),
         }
         connection.close()
         return summary
@@ -727,7 +739,7 @@ def render_pro_table(df, title, rank_col="POS", team_by_player=True, qualifier_t
 
 def round_submission_status(round_id):
     with conn() as c:
-        total_matches = c.execute("SELECT COUNT(*) FROM matches WHERE round_id=?", (round_id,)).fetchone()[0]
+        total_matches = _scalar(c.execute("SELECT COUNT(*) FROM matches WHERE round_id=?", (round_id,)).fetchone())
         round_info = c.execute("SELECT number,reveal_override FROM rounds WHERE id=?", (round_id,)).fetchone()
         round_number = round_info["number"]
         users = c.execute("SELECT id,name FROM users WHERE is_admin=FALSE ORDER BY name").fetchall()
