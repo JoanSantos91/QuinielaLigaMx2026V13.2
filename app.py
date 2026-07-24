@@ -179,6 +179,20 @@ def now_local() -> datetime:
     return datetime.now(TZ).replace(tzinfo=None)
 
 
+def normalize_datetime(value) -> datetime:
+    """Convierte fechas de PostgreSQL o texto ISO a datetime local sin zona horaria."""
+    if isinstance(value, datetime):
+        parsed = value
+    elif isinstance(value, str):
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    else:
+        raise TypeError(f"Fecha no compatible: {type(value).__name__}")
+
+    if parsed.tzinfo is not None:
+        parsed = parsed.astimezone(TZ).replace(tzinfo=None)
+    return parsed
+
+
 def team_logo(team: str) -> Path:
     return ASSETS / "team_logos" / f"{TEAM_SLUG.get(team, 'generic')}.png"
 
@@ -782,7 +796,7 @@ def match_score_card(match, previous=None, locked=False, prefix="p"):
     """Tarjeta horizontal: ambos escudos permanecen alineados en móvil y escritorio."""
     card_key = f"match_card_{prefix}_{match['id']}".replace(" ", "_").replace(".", "_")
     with st.container(border=True, key=card_key):
-        kickoff = datetime.fromisoformat(match["kickoff"]).strftime("%d %b · %H:%M")
+        kickoff = normalize_datetime(match["kickoff"]).strftime("%d %b · %H:%M")
         home_logo = _data_uri(team_logo(match["home_team"]))
         away_logo = _data_uri(team_logo(match["away_team"]))
         home_name = TEAM_SHORT.get(match["home_team"], match["home_team"])
@@ -1277,7 +1291,7 @@ def player_view(user):
         with conn() as c: rounds=c.execute("SELECT * FROM rounds ORDER BY number").fetchall()
         choices={f"Jornada {r['number']}":r for r in rounds}
         round_row=choices[st.selectbox("Jornada",list(choices),key="player_round")]
-        locked=not round_row["is_open"] or now_local()>datetime.fromisoformat(round_row["deadline"])
+        locked=not round_row["is_open"] or now_local() > normalize_datetime(round_row["deadline"])
         st.markdown(f'<div class="section-note">{"🟢 Jornada abierta" if not locked else "🔒 Jornada cerrada"}</div>',unsafe_allow_html=True)
         with conn() as c:
             matches=c.execute("SELECT * FROM matches WHERE round_id=? ORDER BY kickoff",(round_row["id"],)).fetchall()
