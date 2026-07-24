@@ -1,6 +1,10 @@
 import base64
 import hashlib
 import sqlite3
+import re
+
+import psycopg
+from psycopg.rows import dict_row
 import time
 import tempfile
 import os
@@ -70,28 +74,79 @@ def hash_pin(pin: str) -> str:
     return hashlib.sha256(pin.encode("utf-8")).hexdigest()
 
 
+def _translate_sql(sql: str) -> str:
+    """Convierte las consultas SQLite antiguas al formato de PostgreSQL."""
+    statement = sql.strip()
+    upper = statement.upper()
+    if upper.startswith("PRAGMA"):
+        return "SELECT 1"
+    if upper == "BEGIN IMMEDIATE":
+        return "BEGIN"
+    statement = re.sub(r"\bINSERT\s+OR\s+IGNORE\s+INTO\b", "INSERT INTO", statement, flags=re.I)
+    if re.search(r"\bINSERT\s+INTO\b", statement, flags=re.I) and "OR IGNORE" in upper and "ON CONFLICT" not in upper:
+        statement = statement.rstrip().rstrip(";") + " ON CONFLICT DO NOTHING"
+    statement = statement.replace("?", "%s")
+    return statement
+
+
+class PostgresConnection:
+    """Adaptador pequeño para conservar el resto de la aplicación sin reescribirla."""
+    def __init__(self):
+        self._connection = psycopg.connect(
+            st.secrets["DATABASE_URL"],
+            sslmode="require",
+            connect_timeout=15,
+            row_factory=dict_row,
+        )
+
+    def execute(self, sql, params=None):
+        return self._connection.execute(_translate_sql(sql), params or ())
+
+    def executemany(self, sql, params_seq):
+        with self._connection.cursor() as cursor:
+            cursor.executemany(_translate_sql(sql), params_seq)
+        return cursor
+
+    def commit(self):
+        self._connection.commit()
+
+    def rollback(self):
+        self._connection.rollback()
+
+    def close(self):
+        self._connection.close()
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        try:
+            if exc_type is None:
+                self.commit()
+            else:
+                self.rollback()
+        finally:
+            self.close()
+        return False
+
+
 def conn():
-    """Conexión corta y segura. No cambia el modo WAL en cada recarga."""
-    connection = sqlite3.connect(DB_PATH, check_same_thread=False, timeout=5, isolation_level=None)
-    connection.row_factory = sqlite3.Row
-    connection.execute("PRAGMA busy_timeout=5000")
-    connection.execute("PRAGMA foreign_keys=ON")
-    return connection
+    """Abre una conexión segura a PostgreSQL en Supabase."""
+    return PostgresConnection()
 
 
 def run_write(operation, retries=4):
-    """Ejecuta una escritura atómica con reintentos breves si SQLite está ocupado."""
-    delay = 0.15
+    """Ejecuta una escritura atómica con reintentos breves."""
+    delay = 0.25
     for attempt in range(retries):
         c = conn()
         try:
-            c.execute("BEGIN IMMEDIATE")
             operation(c)
             c.commit()
             return
-        except sqlite3.OperationalError as exc:
+        except psycopg.OperationalError:
             c.rollback()
-            if "locked" not in str(exc).lower() or attempt == retries - 1:
+            if attempt == retries - 1:
                 raise
             time.sleep(delay)
             delay *= 2
@@ -111,115 +166,165 @@ def team_logo(team: str) -> Path:
 
 
 def init_db():
+    schema = """
+    CREATE TABLE IF NOT EXISTS users(
+        id BIGSERIAL PRIMARY KEY,
+        code TEXT UNIQUE NOT NULL,
+        name TEXT,
+        team TEXT,
+        pin_hash TEXT,
+        is_admin INTEGER DEFAULT 0
+    );
+    CREATE TABLE IF NOT EXISTS rounds(
+        id BIGSERIAL PRIMARY KEY,
+        number INTEGER UNIQUE NOT NULL,
+        name TEXT,
+        deadline TEXT,
+        is_open INTEGER DEFAULT 0,
+        reveal_override INTEGER DEFAULT 0
+    );
+    CREATE TABLE IF NOT EXISTS matches(
+        id BIGSERIAL PRIMARY KEY,
+        round_id BIGINT REFERENCES rounds(id) ON DELETE CASCADE,
+        home_team TEXT,
+        away_team TEXT,
+        kickoff TEXT,
+        home_score INTEGER,
+        away_score INTEGER,
+        UNIQUE(round_id, home_team, away_team)
+    );
+    CREATE TABLE IF NOT EXISTS predictions(
+        id BIGSERIAL PRIMARY KEY,
+        user_id BIGINT REFERENCES users(id) ON DELETE CASCADE,
+        match_id BIGINT REFERENCES matches(id) ON DELETE CASCADE,
+        home_score INTEGER,
+        away_score INTEGER,
+        submitted_at TEXT,
+        UNIQUE(user_id, match_id)
+    );
+    CREATE TABLE IF NOT EXISTS survivor_picks(
+        id BIGSERIAL PRIMARY KEY,
+        user_id BIGINT REFERENCES users(id) ON DELETE CASCADE,
+        round_id BIGINT REFERENCES rounds(id) ON DELETE CASCADE,
+        team TEXT,
+        submitted_at TEXT,
+        UNIQUE(user_id, round_id),
+        UNIQUE(user_id, team)
+    );
+    CREATE TABLE IF NOT EXISTS settings(key TEXT PRIMARY KEY, value TEXT);
+    CREATE TABLE IF NOT EXISTS champion_eligible(team TEXT PRIMARY KEY);
+    CREATE TABLE IF NOT EXISTS champion_picks(
+        id BIGSERIAL PRIMARY KEY,
+        user_id BIGINT UNIQUE REFERENCES users(id) ON DELETE CASCADE,
+        team TEXT UNIQUE,
+        pick_order INTEGER,
+        submitted_at TEXT
+    );
+    ALTER TABLE rounds ADD COLUMN IF NOT EXISTS reveal_override INTEGER DEFAULT 0;
+    """
     with conn() as c:
-        c.execute("PRAGMA journal_mode=WAL")
-        c.execute("PRAGMA synchronous=NORMAL")
-        c.executescript("""
-        PRAGMA foreign_keys = ON;
-        CREATE TABLE IF NOT EXISTS users(
-            id INTEGER PRIMARY KEY, code TEXT UNIQUE, name TEXT, team TEXT,
-            pin_hash TEXT, is_admin INTEGER DEFAULT 0
-        );
-        CREATE TABLE IF NOT EXISTS rounds(
-            id INTEGER PRIMARY KEY, number INTEGER UNIQUE, name TEXT,
-            deadline TEXT, is_open INTEGER DEFAULT 0, reveal_override INTEGER DEFAULT 0
-        );
-        CREATE TABLE IF NOT EXISTS matches(
-            id INTEGER PRIMARY KEY, round_id INTEGER, home_team TEXT, away_team TEXT,
-            kickoff TEXT, home_score INTEGER, away_score INTEGER,
-            UNIQUE(round_id, home_team, away_team)
-        );
-        CREATE TABLE IF NOT EXISTS predictions(
-            id INTEGER PRIMARY KEY, user_id INTEGER, match_id INTEGER,
-            home_score INTEGER, away_score INTEGER, submitted_at TEXT,
-            UNIQUE(user_id, match_id)
-        );
-        CREATE TABLE IF NOT EXISTS survivor_picks(
-            id INTEGER PRIMARY KEY, user_id INTEGER, round_id INTEGER,
-            team TEXT, submitted_at TEXT,
-            UNIQUE(user_id, round_id), UNIQUE(user_id, team)
-        );
-        CREATE TABLE IF NOT EXISTS settings(key TEXT PRIMARY KEY, value TEXT);
-        CREATE TABLE IF NOT EXISTS champion_eligible(team TEXT PRIMARY KEY);
-        CREATE TABLE IF NOT EXISTS champion_picks(
-            id INTEGER PRIMARY KEY, user_id INTEGER UNIQUE, team TEXT UNIQUE,
-            pick_order INTEGER, submitted_at TEXT
-        );
-        """)
-        # Migración compatible con bases creadas por versiones anteriores.
-        round_columns = {row["name"] for row in c.execute("PRAGMA table_info(rounds)").fetchall()}
-        if "reveal_override" not in round_columns:
-            c.execute("ALTER TABLE rounds ADD COLUMN reveal_override INTEGER DEFAULT 0")
+        for statement in schema.split(";"):
+            if statement.strip():
+                c.execute(statement)
+
         c.execute(
-            "INSERT OR IGNORE INTO users(code,name,team,pin_hash,is_admin) VALUES(?,?,?,?,1)",
+            """INSERT INTO users(code,name,team,pin_hash,is_admin)
+               VALUES(?,?,?,?,1) ON CONFLICT(code) DO NOTHING""",
             ("ADMIN", "Administrador", "", hash_pin("5866")),
         )
         c.execute("UPDATE users SET pin_hash=? WHERE code='ADMIN'", (hash_pin("5866"),))
+
         for code, name, team in PLAYERS:
             c.execute(
-                "INSERT OR IGNORE INTO users(code,name,team,pin_hash,is_admin) VALUES(?,?,?,?,0)",
+                """INSERT INTO users(code,name,team,pin_hash,is_admin)
+                   VALUES(?,?,?,?,0) ON CONFLICT(code) DO NOTHING""",
                 (code, name, team, hash_pin(PLAYER_PINS[code])),
             )
-            # Mantiene sincronizados nombre, equipo y nuevos PIN aun si existe una base previa.
             c.execute(
                 "UPDATE users SET name=?, team=?, pin_hash=? WHERE code=?",
                 (name, team, hash_pin(PLAYER_PINS[code]), code),
             )
+
         for number, games in SCHEDULE.items():
             deadline = min(datetime.fromisoformat(game[0]) for game in games).isoformat(timespec="minutes")
             c.execute(
-                "INSERT OR IGNORE INTO rounds(number,name,deadline,is_open) VALUES(?,?,?,0)",
+                """INSERT INTO rounds(number,name,deadline,is_open)
+                   VALUES(?,?,?,0) ON CONFLICT(number) DO NOTHING""",
                 (number, f"Jornada {number}", deadline),
             )
-            round_id = c.execute("SELECT id FROM rounds WHERE number=?", (number,)).fetchone()[0]
+            round_id = c.execute("SELECT id FROM rounds WHERE number=?", (number,)).fetchone()["id"]
             for kickoff, home, away in games:
                 c.execute(
-                    "INSERT OR IGNORE INTO matches(round_id,home_team,away_team,kickoff) VALUES(?,?,?,?)",
+                    """INSERT INTO matches(round_id,home_team,away_team,kickoff)
+                       VALUES(?,?,?,?) ON CONFLICT(round_id,home_team,away_team) DO NOTHING""",
                     (round_id, home, away, kickoff),
                 )
-        c.execute("INSERT OR IGNORE INTO settings VALUES('champion_draft_active','0')")
+        c.execute(
+            """INSERT INTO settings(key,value) VALUES('champion_draft_active','0')
+               ON CONFLICT(key) DO NOTHING"""
+        )
 
+
+_SQLITE_SCHEMA = """
+CREATE TABLE users(id INTEGER PRIMARY KEY,code TEXT UNIQUE,name TEXT,team TEXT,pin_hash TEXT,is_admin INTEGER DEFAULT 0);
+CREATE TABLE rounds(id INTEGER PRIMARY KEY,number INTEGER UNIQUE,name TEXT,deadline TEXT,is_open INTEGER DEFAULT 0,reveal_override INTEGER DEFAULT 0);
+CREATE TABLE matches(id INTEGER PRIMARY KEY,round_id INTEGER,home_team TEXT,away_team TEXT,kickoff TEXT,home_score INTEGER,away_score INTEGER,UNIQUE(round_id,home_team,away_team));
+CREATE TABLE predictions(id INTEGER PRIMARY KEY,user_id INTEGER,match_id INTEGER,home_score INTEGER,away_score INTEGER,submitted_at TEXT,UNIQUE(user_id,match_id));
+CREATE TABLE survivor_picks(id INTEGER PRIMARY KEY,user_id INTEGER,round_id INTEGER,team TEXT,submitted_at TEXT,UNIQUE(user_id,round_id),UNIQUE(user_id,team));
+CREATE TABLE settings(key TEXT PRIMARY KEY,value TEXT);
+CREATE TABLE champion_eligible(team TEXT PRIMARY KEY);
+CREATE TABLE champion_picks(id INTEGER PRIMARY KEY,user_id INTEGER UNIQUE,team TEXT UNIQUE,pick_order INTEGER,submitted_at TEXT);
+"""
+
+_TABLE_COLUMNS = {
+    "users": ["id", "code", "name", "team", "pin_hash", "is_admin"],
+    "rounds": ["id", "number", "name", "deadline", "is_open", "reveal_override"],
+    "matches": ["id", "round_id", "home_team", "away_team", "kickoff", "home_score", "away_score"],
+    "predictions": ["id", "user_id", "match_id", "home_score", "away_score", "submitted_at"],
+    "survivor_picks": ["id", "user_id", "round_id", "team", "submitted_at"],
+    "settings": ["key", "value"],
+    "champion_eligible": ["team"],
+    "champion_picks": ["id", "user_id", "team", "pick_order", "submitted_at"],
+}
 
 
 def create_database_backup_bytes() -> bytes:
-    """Crea una copia consistente de quiniela.db, incluyendo cambios pendientes del WAL."""
-    if not DB_PATH.exists():
-        raise FileNotFoundError("No se encontró la base de datos de la quiniela.")
-
-    with conn() as source:
-        source.execute("PRAGMA wal_checkpoint(FULL)")
-        with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as temp_file:
-            temp_path = Path(temp_file.name)
-        try:
-            with sqlite3.connect(temp_path) as destination:
-                source.backup(destination)
-            return temp_path.read_bytes()
-        finally:
-            temp_path.unlink(missing_ok=True)
+    """Genera un respaldo SQLite portátil a partir de los datos de Supabase."""
+    with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as temp_file:
+        temp_path = Path(temp_file.name)
+    try:
+        destination = sqlite3.connect(temp_path)
+        destination.executescript(_SQLITE_SCHEMA)
+        with conn() as source:
+            for table, columns in _TABLE_COLUMNS.items():
+                rows = source.execute(f"SELECT {','.join(columns)} FROM {table}").fetchall()
+                if not rows:
+                    continue
+                placeholders = ",".join("?" for _ in columns)
+                destination.executemany(
+                    f"INSERT INTO {table}({','.join(columns)}) VALUES({placeholders})",
+                    [tuple(row[col] for col in columns) for row in rows],
+                )
+        destination.commit()
+        destination.close()
+        return temp_path.read_bytes()
+    finally:
+        temp_path.unlink(missing_ok=True)
 
 
 def inspect_backup_file(path: Path) -> dict:
     """Valida un respaldo SQLite y devuelve un resumen antes de restaurarlo."""
-    required_tables = {
-        "users", "rounds", "matches", "predictions", "survivor_picks",
-        "settings", "champion_eligible", "champion_picks",
-    }
+    required_tables = set(_TABLE_COLUMNS)
     try:
         connection = sqlite3.connect(path)
         connection.row_factory = sqlite3.Row
         integrity = connection.execute("PRAGMA integrity_check").fetchone()[0]
         if integrity != "ok":
             raise ValueError(f"El respaldo no pasó la revisión de integridad: {integrity}")
-
-        tables = {
-            row[0] for row in connection.execute(
-                "SELECT name FROM sqlite_master WHERE type='table'"
-            ).fetchall()
-        }
+        tables = {row[0] for row in connection.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()}
         missing = sorted(required_tables - tables)
         if missing:
             raise ValueError("Faltan tablas necesarias: " + ", ".join(missing))
-
         summary = {
             "usuarios": connection.execute("SELECT COUNT(*) FROM users").fetchone()[0],
             "participantes": connection.execute("SELECT COUNT(*) FROM users WHERE is_admin=0").fetchone()[0],
@@ -235,63 +340,70 @@ def inspect_backup_file(path: Path) -> dict:
         raise ValueError("El archivo no es una base SQLite válida o está dañado.") from exc
 
 
+def _read_sqlite_backup(path: Path) -> dict:
+    db = sqlite3.connect(path)
+    db.row_factory = sqlite3.Row
+    try:
+        return {
+            table: [dict(row) for row in db.execute(f"SELECT {','.join(columns)} FROM {table}").fetchall()]
+            for table, columns in _TABLE_COLUMNS.items()
+        }
+    finally:
+        db.close()
+
+
+def _reset_postgres_sequences(c):
+    for table in ("users", "rounds", "matches", "predictions", "survivor_picks", "champion_picks"):
+        c.execute(
+            f"SELECT setval(pg_get_serial_sequence('{table}','id'), COALESCE(MAX(id),1), MAX(id) IS NOT NULL) FROM {table}"
+        )
+
+
 def restore_database_from_bytes(uploaded_bytes: bytes) -> tuple[bytes, dict]:
-    """Restaura un respaldo validado y devuelve la copia automática previa."""
+    """Restaura un respaldo SQLite dentro de PostgreSQL/Supabase."""
     if not uploaded_bytes:
         raise ValueError("El archivo de respaldo está vacío.")
-
     with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as uploaded_file:
         uploaded_file.write(uploaded_bytes)
         uploaded_path = Path(uploaded_file.name)
-
-    rollback_bytes = create_database_backup_bytes()
-    with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as rollback_file:
-        rollback_file.write(rollback_bytes)
-        rollback_path = Path(rollback_file.name)
-
     try:
         summary = inspect_backup_file(uploaded_path)
+        imported = _read_sqlite_backup(uploaded_path)
+        rollback_bytes = create_database_backup_bytes()
 
-        # Fuerza que la base actual deje todo consolidado antes del reemplazo.
-        with conn() as current:
-            current.execute("PRAGMA wal_checkpoint(TRUNCATE)")
-
-        # Elimina archivos auxiliares viejos para que no se mezclen con el respaldo.
-        for suffix in ("-wal", "-shm"):
-            Path(str(DB_PATH) + suffix).unlink(missing_ok=True)
-
-        os.replace(uploaded_path, DB_PATH)
-
-        # Verificación final ya instalada en la ruta real.
-        installed_summary = inspect_backup_file(DB_PATH)
-        return rollback_bytes, installed_summary
-    except Exception:
-        # Si algo falla, regresa automáticamente a la base anterior.
+        c = conn()
         try:
-            for suffix in ("-wal", "-shm"):
-                Path(str(DB_PATH) + suffix).unlink(missing_ok=True)
-            os.replace(rollback_path, DB_PATH)
+            c.execute(
+                "TRUNCATE champion_picks, champion_eligible, survivor_picks, predictions, matches, rounds, settings, users RESTART IDENTITY CASCADE"
+            )
+            for table in ("users", "rounds", "matches", "predictions", "survivor_picks", "settings", "champion_eligible", "champion_picks"):
+                columns = _TABLE_COLUMNS[table]
+                rows = imported[table]
+                if rows:
+                    placeholders = ",".join("?" for _ in columns)
+                    c.executemany(
+                        f"INSERT INTO {table}({','.join(columns)}) VALUES({placeholders})",
+                        [tuple(row.get(col) for col in columns) for row in rows],
+                    )
+            _reset_postgres_sequences(c)
+            c.commit()
         except Exception:
-            pass
-        raise
+            c.rollback()
+            raise
+        finally:
+            c.close()
+        return rollback_bytes, summary
     finally:
         uploaded_path.unlink(missing_ok=True)
-        rollback_path.unlink(missing_ok=True)
 
 
 def backup_restore_panel():
     st.subheader("💾 Copias de seguridad")
     st.caption(
         "Descarga una copia completa de la quiniela o restaura toda la información "
-        "desde un respaldo .db. Solo el administrador puede usar estas funciones."
+        "desde un respaldo .db. Los datos activos se guardan en Supabase."
     )
-
     st.markdown("### Descargar respaldo completo")
-    st.info(
-        "El respaldo incluye participantes, pronósticos, resultados, Survivor, "
-        "duelos, jornadas, configuración y elección de campeón."
-    )
-
     try:
         backup_bytes = create_database_backup_bytes()
         timestamp = now_local().strftime("%Y-%m-%d_%H-%M-%S")
@@ -307,21 +419,15 @@ def backup_restore_panel():
         st.error(f"No fue posible preparar el respaldo: {exc}")
 
     st.divider()
-    st.markdown("### Restaurar un respaldo")
-    st.warning(
-        "La restauración reemplazará toda la información actual. Antes de hacerlo, "
-        "la aplicación crea automáticamente una copia de la base vigente."
-    )
-
+    st.markdown("### Restaurar o migrar un respaldo SQLite")
+    st.warning("La restauración reemplazará toda la información actual de Supabase.")
     uploaded = st.file_uploader(
         "Selecciona un respaldo de la quiniela (.db)",
         type=["db", "sqlite", "sqlite3"],
         key="restore_database_uploader",
     )
-
     if uploaded is None:
         return
-
     uploaded_bytes = uploaded.getvalue()
     try:
         with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as temp_file:
@@ -331,31 +437,21 @@ def backup_restore_panel():
             summary = inspect_backup_file(temp_path)
         finally:
             temp_path.unlink(missing_ok=True)
-
-        st.success("El respaldo es válido y está listo para restaurarse.")
+        st.success("El respaldo es válido y está listo para migrarse a Supabase.")
         c1, c2, c3 = st.columns(3)
         c1.metric("Participantes", summary["participantes"])
         c2.metric("Pronósticos", summary["pronosticos"])
-        c3.metric("Resultados cargados", summary["partidos"])
-        c4, c5, c6 = st.columns(3)
-        c4.metric("Jornadas", summary["jornadas"])
-        c5.metric("Survivor", summary["survivor"])
-        c6.metric("Elecciones campeón", summary["campeon"])
+        c3.metric("Partidos", summary["partidos"])
     except Exception as exc:
         st.error(f"Este archivo no puede restaurarse: {exc}")
         return
 
-    confirmation = st.text_input(
-        'Para confirmar, escribe exactamente: RESTAURAR',
-        key="restore_database_confirmation",
-    )
-    confirmed = confirmation.strip().upper() == "RESTAURAR"
-
+    confirmation = st.text_input('Para confirmar, escribe exactamente: RESTAURAR', key="restore_database_confirmation")
     if st.button(
-        "♻️ Restaurar base de datos",
+        "♻️ Migrar respaldo a Supabase",
         type="primary",
         use_container_width=True,
-        disabled=not confirmed,
+        disabled=confirmation.strip().upper() != "RESTAURAR",
         key="restore_database_button",
     ):
         try:
@@ -365,19 +461,21 @@ def backup_restore_panel():
             st.session_state["pre_restore_backup_name"] = f"quiniela_antes_de_restaurar_{timestamp}.db"
             st.session_state["restore_success_summary"] = installed_summary
             st.session_state.pop("user", None)
+            st.cache_resource.clear()
             st.rerun()
         except Exception as exc:
-            st.error(f"No se pudo restaurar el respaldo. La base anterior se conservó. Detalle: {exc}")
+            st.error(f"No se pudo migrar el respaldo. Detalle: {exc}")
 
     if "pre_restore_backup" in st.session_state:
         st.download_button(
-            "⬇️ Descargar copia automática anterior a la restauración",
+            "⬇️ Descargar copia automática anterior",
             data=st.session_state["pre_restore_backup"],
             file_name=st.session_state.get("pre_restore_backup_name", "quiniela_antes_de_restaurar.db"),
             mime="application/octet-stream",
             use_container_width=True,
             key="download_pre_restore_backup",
         )
+
 
 def inject_style():
     st.markdown("""
