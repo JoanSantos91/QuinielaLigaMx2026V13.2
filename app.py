@@ -4,15 +4,12 @@ import sqlite3
 import time
 import tempfile
 import os
-import json
-import re
 from datetime import datetime
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
 import pandas as pd
 import streamlit as st
-import streamlit.components.v1 as components
 
 from schedule_data import PLAYER_PINS, SCHEDULE
 
@@ -382,95 +379,66 @@ def backup_restore_panel():
             key="download_pre_restore_backup",
         )
 
-GLOBAL_CSS = r"""
-__CSS_PLACEHOLDER__
-"""
-
-
 def inject_style():
-    st.markdown(f"<style>{{GLOBAL_CSS}}</style>", unsafe_allow_html=True)
-
-
-def _safe_image_filename(title: str) -> str:
-    normalized = re.sub(r"[^A-Za-z0-9_-]+", "_", title.strip())
-    return normalized.strip("_") or "tabla_quiniela"
-
-
-def render_exact_image_download(html_fragment: str, title: str, key_suffix: str = "") -> None:
-    """Render a browser-side PNG export using the exact same HTML and CSS as the visible table."""
-    filename = _safe_image_filename(title) + ".png"
-    payload_html = json.dumps(html_fragment, ensure_ascii=False)
-    payload_css = json.dumps(GLOBAL_CSS, ensure_ascii=False)
-    payload_filename = json.dumps(filename)
-    component_html = f"""
-    <script src="https://cdn.jsdelivr.net/npm/html2canvas@1.4.1/dist/html2canvas.min.js"></script>
+    st.markdown("""
     <style>
-      html,body{{margin:0;padding:0;background:transparent;font-family:Arial,Helvetica,sans-serif}}
-      #download-btn{{width:100%;min-height:44px;border:1px solid #b8c7d9;border-radius:12px;background:#fff;color:#101828;font-weight:850;cursor:pointer;padding:10px 14px}}
-      #download-btn:hover{{border-color:#00A94F;color:#075f43}}
-      #download-btn:disabled{{opacity:.65;cursor:wait}}
-      #status{{font-size:12px;color:#667085;text-align:center;margin-top:4px;min-height:14px}}
-      #capture-stage{{position:fixed;left:-100000px;top:0;background:#F2F6FB;padding:18px;box-sizing:border-box;z-index:-1}}
+    :root{--mx-green:#00A94F;--mx-pink:#E6007E;--mx-navy:#071426;--mx-blue:#123B68;--mx-bg:#F2F6FB;--mx-card:#FFFFFF;--mx-text:#101828;--mx-muted:#667085;--mx-border:#D7E0EA}
+    .stApp{background:linear-gradient(180deg,#eef4fa 0,#f8fafc 280px);color:var(--mx-text)}
+    [data-testid="stHeader"]{background:rgba(242,246,251,.92);backdrop-filter:blur(10px)}
+    .block-container{max-width:1160px;padding-top:.7rem;padding-bottom:4rem} h1,h2,h3,p,label,.stMarkdown,.stCaption{color:var(--mx-text)}
+    .hero{position:relative;overflow:hidden;display:grid;grid-template-columns:auto 1fr auto;align-items:center;gap:16px;padding:18px 22px;margin-bottom:18px;background:linear-gradient(112deg,#061526 0%,#0b3156 60%,#0a4d60 100%);border-radius:24px;box-shadow:0 14px 34px rgba(7,20,38,.18)}
+    .hero:before{content:"";position:absolute;inset:0;background:radial-gradient(circle at 88% 24%,rgba(230,0,126,.42),transparent 25%),radial-gradient(circle at 72% 92%,rgba(0,169,79,.35),transparent 28%)}
+    .hero>*{position:relative;z-index:1}.hero .league-logo{width:76px;height:58px;object-fit:contain;background:#fff;border-radius:15px;padding:8px}.hero .ball{width:116px;height:116px;border-radius:50%;object-fit:cover;border:4px solid rgba(255,255,255,.82)}
+    .hero h1{margin:0;color:#fff;font-size:clamp(1.45rem,4vw,2.35rem)}.hero p{margin:3px 0 0;color:#d8e8f7}.hero .tag{display:inline-flex;margin-top:8px;padding:5px 11px;border-radius:999px;background:linear-gradient(90deg,var(--mx-green),#0bc46a);color:#fff;font-size:.78rem;font-weight:850}
+    .login-shell{max-width:560px;margin:0 auto}.profile-card{display:flex;align-items:center;gap:14px;background:#fff;border:1px solid var(--mx-border);border-left:6px solid var(--mx-green);border-radius:18px;padding:15px 17px;margin:10px 0 16px;box-shadow:0 8px 20px rgba(15,23,42,.06)}
+    .profile-card img{width:96px;height:96px;object-fit:contain}.profile-card .name{font-size:1.15rem;font-weight:900}.profile-card .sub{color:var(--mx-muted)}
+    .section-note{background:linear-gradient(90deg,#e9fbf2,#f4fffa);border:1px solid #aee9ca;border-radius:14px;padding:11px 13px;color:#075f43;font-weight:750}
+    .match-title{text-align:center;font-size:.78rem;color:var(--mx-muted);font-weight:800;margin-bottom:6px;text-transform:uppercase}.team-name{text-align:center;font-weight:900;font-size:.92rem;line-height:1.1;margin-top:5px;color:var(--mx-text)}.score-sep{text-align:center;font-size:1.65rem;font-weight:900;color:var(--mx-pink)}
+    .privacy-lock{background:#fff5fb;border:1px solid #efb9d7;border-radius:14px;padding:12px;color:#8b1455}.privacy-open{background:#edfdf4;border:1px solid #b6e9ca;border-radius:14px;padding:12px;color:#0b6b3e;font-weight:750}
+    .table-title{display:flex;align-items:center;justify-content:space-between;margin:.3rem 0 .8rem}.table-title h3{margin:0}.table-pill{background:var(--mx-navy);color:#fff;padding:5px 10px;border-radius:999px;font-size:.75rem;font-weight:800}
+    .rank-table{width:100%;border-collapse:separate;border-spacing:0 7px}.rank-table th{padding:7px 10px;color:#667085;font-size:.74rem;text-transform:uppercase;text-align:left}.rank-table td{padding:10px;background:#fff;border-top:1px solid #e2e8f0;border-bottom:1px solid #e2e8f0}.rank-table td:first-child{border-left:4px solid var(--mx-green);border-radius:12px 0 0 12px;text-align:center;font-weight:950;width:52px}.rank-table td:last-child{border-right:1px solid #e2e8f0;border-radius:0 12px 12px 0}.rank-table tr.top1 td{background:linear-gradient(90deg,#2f741e,#3f8b29);color:#fff;border-color:#28651a}.rank-table tr.top1 small{color:#e8f7df!important}.rank-table tr.top2 td{background:linear-gradient(90deg,#1763a4,#2776b9);color:#fff;border-color:#15568e}.rank-table tr.top2 small{color:#e2f2ff!important}.rank-table tr.top3 td{background:linear-gradient(90deg,#4a86df,#5a97ec);color:#fff;border-color:#3c76c8}.rank-table tr.top3 small{color:#edf5ff!important}.rank-table tr.alt td{background:#f0f3f6}.rank-table tr.base td{background:#fff}.rank-table tr.qualifier td:first-child{border-left:7px solid #11a8ff}.rank-table tr.top1 .pts,.rank-table tr.top2 .pts,.rank-table tr.top3 .pts{color:#fff}.club-cell{display:flex;align-items:center;gap:10px;font-weight:850}.club-cell img{width:52px;height:52px;object-fit:contain}.pts{font-size:1.05rem;font-weight:950;color:var(--mx-navy)}
+    .rank-table{table-layout:fixed;width:auto;min-width:520px;max-width:100%;margin:0 auto}
+    .rank-table th,.rank-table td{box-sizing:border-box}
+    .rank-table th{white-space:nowrap;text-align:center;padding-left:5px;padding-right:5px}
+    .rank-table th:nth-child(2){text-align:left}
+    .rank-table .rank-pos{width:48px;text-align:center}
+    .rank-table .rank-participant{width:250px;max-width:250px;text-align:left;padding-left:8px;padding-right:8px}
+    .rank-table .rank-number{width:52px;text-align:center!important;vertical-align:middle;font-variant-numeric:tabular-nums;padding-left:4px;padding-right:4px}
+    .rank-table .club-cell{display:grid;grid-template-columns:42px minmax(0,1fr);align-items:center;gap:8px;min-width:0;width:100%}
+    .rank-table .club-cell img{width:42px;height:42px;min-width:42px;object-fit:contain}
+    .rank-table .participant-text{display:block;min-width:0;line-height:1.14;text-align:left}
+    .rank-table .participant-name{display:block;white-space:normal;overflow-wrap:break-word;word-break:normal;hyphens:none;line-height:1.15;font-size:1.02rem;font-weight:900}
+    .rank-table .participant-text small{display:block;margin-top:3px;white-space:normal;overflow-wrap:break-word;word-break:normal;line-height:1.15;font-size:.68rem}
+    [data-testid="stVerticalBlockBorderWrapper"]{background:var(--mx-card);border-color:var(--mx-border)!important;border-radius:18px!important;box-shadow:0 5px 16px rgba(7,26,51,.06)} div[data-testid="stMetric"]{background:#fff;border:1px solid var(--mx-border);padding:12px;border-radius:15px}
+    .stButton>button,.stDownloadButton>button{border-radius:12px;font-weight:850;min-height:44px}.stButton>button[kind="primary"]{background:linear-gradient(90deg,var(--mx-green),#08bf69);border:0;color:#fff}
+    div[data-baseweb="select"]>div,input{background:#fff!important;color:var(--mx-text)!important;border-color:#b8c7d9!important}[data-testid="stNumberInput"] input{text-align:center;font-size:1.4rem;font-weight:950;color:var(--mx-navy)!important;min-height:52px}.score-stack+[data-testid="stNumberInput"],.score-stack~[data-testid="stNumberInput"]{max-width:480px;margin-left:auto;margin-right:auto}
+    [data-baseweb="tab-list"]{gap:5px;background:#e7edf5;padding:5px;border-radius:14px;overflow-x:auto}[data-baseweb="tab"]{border-radius:10px;color:var(--mx-text);white-space:nowrap}[aria-selected="true"]{background:#fff!important;color:var(--mx-navy)!important}
+    [data-testid="stDataFrame"]{background:#fff;border-radius:14px;overflow:hidden}.stAlert{border-radius:14px}
+    .versus-badge{display:flex;align-items:center;justify-content:center;margin:auto;width:42px;height:42px;border-radius:50%;background:var(--mx-navy);color:#fff;font-weight:950;font-size:.82rem;letter-spacing:.04em}
+    .score-label{text-align:center;color:#64748b;font-size:.68rem;font-weight:900;letter-spacing:.12em;margin:2px 0 4px}
+    .score-sep-lower{padding-top:24px;font-size:1.8rem;color:var(--mx-pink)}
+    .pro-table-wrap{width:100%;overflow-x:auto;padding-bottom:4px}.pro-table{width:100%;border-collapse:separate;border-spacing:0 6px;min-width:640px}.pro-table th{background:var(--mx-navy);color:#fff;padding:9px 10px;text-transform:uppercase;font-size:.72rem;letter-spacing:.04em;text-align:center}.pro-table th:first-child{border-radius:10px 0 0 10px}.pro-table th:last-child{border-radius:0 10px 10px 0}.pro-table td{padding:9px 10px;text-align:center;border-top:1px solid #dce4ed;border-bottom:1px solid #dce4ed;background:#fff}.pro-table tbody tr:nth-child(even) td{background:#f0f3f6}.pro-table td:first-child{border-left:4px solid var(--mx-green);border-radius:10px 0 0 10px}.pro-table td:last-child{border-right:1px solid #dce4ed;border-radius:0 10px 10px 0}.pro-table .podium-1 td{background:#2f741e!important;color:#fff}.pro-table .podium-2 td{background:#1763a4!important;color:#fff}.pro-table .podium-3 td{background:#4a86df!important;color:#fff}.pro-table .qualifier td:first-child{border-left:7px solid #11a8ff}.player-cell{display:flex;align-items:center;justify-content:flex-start;gap:10px;min-width:220px;text-align:left}.mini-logo{display:block;width:52px;height:52px;min-width:52px;object-fit:contain;object-position:center;margin:0}.player-cell b{display:block;text-align:left;white-space:nowrap}.table-legend{display:flex;gap:12px;flex-wrap:wrap;margin:4px 0 10px;color:#475467;font-size:.78rem}.legend-bar{display:inline-block;width:6px;height:15px;background:#11a8ff;border-radius:4px;vertical-align:middle;margin-right:5px}.logo-stage img{width:126px!important;height:126px!important;object-fit:contain;margin:auto}.match-card-note{text-align:center;color:#667085;font-size:.72rem;margin-top:5px}
+    .pro-table td:nth-child(2){text-align:left}.pro-table th:nth-child(2){text-align:left}
+    .match-teams-row{display:grid;grid-template-columns:minmax(0,1fr) 48px minmax(0,1fr);align-items:center;gap:8px;width:100%;margin:2px 0 8px}.match-team{display:flex;flex-direction:column;align-items:center;justify-content:flex-start;min-width:0}.match-team img{width:132px;height:132px;max-width:100%;object-fit:contain;object-position:center}.match-team-name{text-align:center;font-weight:900;font-size:.9rem;line-height:1.15;margin-top:5px;color:var(--mx-text);min-height:2.1em;display:flex;align-items:center;justify-content:center}.match-vs{display:flex;align-items:center;justify-content:center;width:42px;height:42px;margin:auto;border-radius:50%;background:var(--mx-navy);color:#fff;font-weight:950;font-size:.82rem}.match-score-row{display:grid;grid-template-columns:minmax(0,1fr) 48px minmax(0,1fr);align-items:end;gap:8px}.match-score-dash{text-align:center;padding-bottom:14px;font-size:1.8rem;font-weight:900;color:var(--mx-pink)}
+    [class*="st-key-match_card_"] [data-testid="stHorizontalBlock"]{display:flex!important;flex-direction:row!important;flex-wrap:nowrap!important;align-items:flex-end!important;gap:.45rem!important}
+    [class*="st-key-match_card_"] [data-testid="column"]{min-width:0!important;flex:1 1 0!important;width:auto!important}
+    [class*="st-key-match_card_"] [data-testid="column"]:nth-child(2){flex:0 0 48px!important}
+    .survivor-required{margin-top:16px;padding:14px;border:1px solid #b8e7ce;border-radius:16px;background:linear-gradient(90deg,#effcf5,#f8fffb)}
+    .survivor-required h4{margin:0 0 3px;color:#075f43}.survivor-required p{margin:0;color:#476357;font-size:.82rem}
+    .official-result-box{margin:8px 0 10px;padding:10px 12px;border:1px solid #9fdfbd;border-radius:13px;background:linear-gradient(90deg,#ebfbf3,#f7fffb);color:#08633d;text-align:center;font-weight:850}.official-result-box b{font-size:1.05rem}.result-actions{margin:4px 0 16px}.result-saved-note{text-align:center;color:#087443;font-size:.78rem;font-weight:800;margin:-2px 0 8px}
+
+    .pred{display:inline-block;min-width:48px;padding:5px 8px;border-radius:9px;font-weight:900;white-space:nowrap}.pred.exact{background:#d9fbe8;color:#087443;border:1px solid #83ddb0}.pred.winner{background:#fff4c7;color:#785900;border:1px solid #e8cf62}.pred.wrong{background:#f3f4f6;color:#475467;border:1px solid #d0d5dd}.pred.pending{background:#eef2f6;color:#667085;border:1px solid #d7dee7}.official-score{font-size:.67rem;font-weight:700;color:#d9e5f2;white-space:nowrap}.prediction-legend{display:flex;gap:7px;flex-wrap:wrap;margin:10px 0}.prediction-legend .pred{font-size:.74rem;min-width:0}.survivor-eliminated{margin-top:16px;padding:14px;border:1px solid #efb7b7;border-radius:16px;background:#fff3f3}.survivor-eliminated h4{margin:0 0 3px;color:#9b1c1c}.survivor-eliminated p{margin:0;color:#6b3131;font-size:.82rem}
+    .pro-table{table-layout:auto;width:max-content;min-width:100%}
+    .pro-table th,.pro-table td{white-space:nowrap}
+    .pro-table .col-pos,.pro-table .col-pts,.pro-table .col-jg,.pro-table .col-je,.pro-table .col-jp,.pro-table .col-gf,.pro-table .col-gc,.pro-table .col-dif,.pro-table .col-vidas,.pro-table .col-elecciones{width:1%;min-width:48px;max-width:72px;padding-left:7px;padding-right:7px}
+    .pro-table .col-pos{min-width:44px;max-width:55px}
+    .pro-table .col-jugador,.pro-table .col-participante{min-width:220px}
+    .pro-table .col-equipo{min-width:95px;max-width:135px}
+    .pro-table .col-estado,.pro-table .col-survivor{min-width:90px;max-width:125px}
+    .pro-table .col-capturados,.pro-table .col-total{min-width:78px;max-width:95px}
+    @media(max-width:640px){.rank-table{min-width:540px}.rank-table .rank-pos{width:44px}.rank-table .rank-number{width:48px}.rank-table td{padding-top:8px;padding-bottom:8px}.rank-table .club-cell{grid-template-columns:38px minmax(0,1fr);gap:7px}.rank-table .club-cell img{width:38px;height:38px;min-width:38px}.rank-table .participant-name{font-size:.94rem}.rank-table .participant-text small{font-size:.64rem}.player-cell{min-width:190px;gap:8px}.mini-logo{width:48px;height:48px;min-width:48px}.pro-table td{padding:8px 7px}.block-container{padding-left:.55rem;padding-right:.55rem}.hero{grid-template-columns:auto 1fr;padding:13px}.hero .league-logo{width:58px;height:46px}.hero .ball{display:none}.hero h1{font-size:1.35rem}.team-name{font-size:.75rem}.profile-card img{width:76px;height:76px}[data-testid="stNumberInput"] input{font-size:1.15rem}.stTabs [data-baseweb="tab"]{font-size:.73rem;padding-left:7px;padding-right:7px}}
     </style>
-    <button id="download-btn" type="button">📷 Descargar imagen exactamente como se ve</button>
-    <div id="status" aria-live="polite"></div>
-    <div id="capture-stage"></div>
-    <script>
-      const fragment = {payload_html};
-      const css = {payload_css};
-      const filename = {payload_filename};
-      const btn = document.getElementById('download-btn');
-      const status = document.getElementById('status');
-      const stage = document.getElementById('capture-stage');
-
-      async function waitForImages(root) {{
-        const images = Array.from(root.querySelectorAll('img'));
-        await Promise.all(images.map(img => {{
-          if (img.complete) return Promise.resolve();
-          return new Promise(resolve => {{ img.onload = resolve; img.onerror = resolve; }});
-        }}));
-      }}
-
-      btn.addEventListener('click', async () => {{
-        btn.disabled = true;
-        status.textContent = 'Generando imagen…';
-        try {{
-          const frameWidth = Math.max(320, document.documentElement.clientWidth - 8);
-          stage.style.width = frameWidth + 'px';
-          stage.innerHTML = '<style>' + css + '</style><div class="export-root">' + fragment + '</div>';
-          await waitForImages(stage);
-          await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
-          const root = stage.querySelector('.export-root');
-          const contentWidth = Math.ceil(Math.max(root.scrollWidth, root.getBoundingClientRect().width));
-          stage.style.width = Math.max(frameWidth, contentWidth + 36) + 'px';
-          await new Promise(resolve => requestAnimationFrame(resolve));
-          const canvas = await html2canvas(stage, {{
-            backgroundColor: '#F2F6FB',
-            scale: 2,
-            useCORS: true,
-            allowTaint: false,
-            logging: false,
-            windowWidth: stage.scrollWidth,
-            windowHeight: stage.scrollHeight
-          }});
-          const link = document.createElement('a');
-          link.download = filename;
-          link.href = canvas.toDataURL('image/png');
-          document.body.appendChild(link);
-          link.click();
-          link.remove();
-          status.textContent = 'Imagen descargada.';
-        }} catch (error) {{
-          console.error(error);
-          status.textContent = 'No se pudo generar la imagen. Recarga la página e inténtalo nuevamente.';
-        }} finally {{
-          btn.disabled = false;
-          setTimeout(() => {{ if (status.textContent === 'Imagen descargada.') status.textContent = ''; }}, 2500);
-        }}
-      }});
-    </script>
-    """
-    components.html(component_html, height=68, scrolling=False)
+    """, unsafe_allow_html=True)
 
 
 @st.cache_data(show_spinner=False)
@@ -596,10 +564,9 @@ def render_rank_table(df, title="Tabla general"):
     legend='<div class="table-legend"><span><i class="legend-bar"></i>Top 8: clasifica a elección de campeón</span><span>Desempate: puntos, DIF, GF y exactos</span></div>' if title.lower().startswith("tabla general") else ''
     html=f'<div class="table-title"><h3>{title}</h3><span class="table-pill">Actualizada en tiempo real</span></div>{legend}<div class="pro-table-wrap"><table class="rank-table"><colgroup><col style="width:48px"><col style="width:250px"><col style="width:52px"><col style="width:52px"><col style="width:52px"><col style="width:52px"></colgroup><thead><tr><th>POS.</th><th>PARTICIPANTE</th><th>PTS</th><th>GF</th><th>GC</th><th>DIF</th></tr></thead><tbody>{"".join(rows)}</tbody></table></div>'
     st.markdown(html,unsafe_allow_html=True)
-    render_exact_image_download(html, title, key_suffix="rank")
 
 
-def render_pro_table(df, title, rank_col="POS", team_by_player=True, qualifier_top8=False, export_prefix=""):
+def render_pro_table(df, title, rank_col="POS", team_by_player=True, qualifier_top8=False):
     if df is None or df.empty:
         st.info("Todavía no hay información disponible."); return
     visible=df.copy()
@@ -623,9 +590,7 @@ def render_pro_table(df, title, rank_col="POS", team_by_player=True, qualifier_t
             if isinstance(val,float): val=f'{val:g}'
             cells.append(f'<td class="{col_class(col)}">{val}</td>')
         body.append(f'<tr class="{cls}">{"".join(cells)}</tr>')
-    html = f'<div class="table-title"><h3>{title}</h3></div><div class="pro-table-wrap"><table class="pro-table"><thead><tr>{headers}</tr></thead><tbody>{"".join(body)}</tbody></table></div>'
-    st.markdown(html,unsafe_allow_html=True)
-    render_exact_image_download(export_prefix + html, title, key_suffix=f"pro_{rank_col}_{qualifier_top8}")
+    st.markdown(f'<div class="table-title"><h3>{title}</h3></div><div class="pro-table-wrap"><table class="pro-table"><thead><tr>{headers}</tr></thead><tbody>{"".join(body)}</tbody></table></div>',unsafe_allow_html=True)
 
 def round_submission_status(round_id):
     with conn() as c:
@@ -722,17 +687,9 @@ def public_predictions(round_id):
             row["SURVIVOR"] = '<span class="pred pending">—</span>'
         rows.append(row)
     message = "✅ Todos terminaron. Los pronósticos ya son visibles para el grupo." if complete else "🔓 Publicación autorizada por el administrador. Los jugadores pendientes aparecen con guiones."
-    status_html = f'<div class="privacy-open">{message}</div>'
-    legend_html = '<div class="prediction-legend"><span class="pred exact">Exacto · 2 pts</span><span class="pred winner">Ganador/empate · 1 pt</span><span class="pred wrong">Sin puntos</span><span class="pred pending">Pendiente</span></div>'
-    st.markdown(status_html, unsafe_allow_html=True)
-    st.markdown(legend_html, unsafe_allow_html=True)
-    render_pro_table(
-        pd.DataFrame(rows),
-        f'Pronósticos del grupo · Jornada {round_row["number"]}',
-        rank_col="",
-        team_by_player=True,
-        export_prefix=status_html + legend_html,
-    )
+    st.markdown(f'<div class="privacy-open">{message}</div>', unsafe_allow_html=True)
+    st.markdown('<div class="prediction-legend"><span class="pred exact">Exacto · 2 pts</span><span class="pred winner">Ganador/empate · 1 pt</span><span class="pred wrong">Sin puntos</span><span class="pred pending">Pendiente</span></div>', unsafe_allow_html=True)
+    render_pro_table(pd.DataFrame(rows), f'Pronósticos del grupo · Jornada {round_row["number"]}', rank_col="", team_by_player=True)
 
 
 def login():
