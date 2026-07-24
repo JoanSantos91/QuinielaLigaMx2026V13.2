@@ -826,20 +826,43 @@ def login():
         submitted = st.form_submit_button("Entrar", type="primary", use_container_width=True)
 
     if submitted:
-        if not pin:
+        clean_pin = (pin or "").strip()
+        if not clean_pin:
             st.warning("Escribe tu PIN para continuar.")
         else:
-            with conn() as c:
-                user = c.execute(
-                    "SELECT * FROM users WHERE code=? AND pin_hash=?",
-                    (code.strip(), hash_pin(pin.strip())),
-                ).fetchone()
-            if user:
+            # Valida contra la configuración original de la quiniela. Esto evita
+            # bloqueos por hashes importados o columnas creadas previamente.
+            expected_pin = "5866" if code == "ADMIN" else str(PLAYER_PINS.get(code, "")).strip()
+            if clean_pin != expected_pin:
+                st.error("El nombre o el PIN no son correctos.")
+            else:
+                with conn() as c:
+                    user = c.execute(
+                        "SELECT * FROM users WHERE code=?",
+                        (code,),
+                    ).fetchone()
+                    if not user:
+                        is_admin = 1 if code == "ADMIN" else 0
+                        c.execute(
+                            "INSERT INTO users(code,name,team,pin_hash,is_admin) VALUES(?,?,?,?,?)",
+                            (code, name, team, hash_pin(expected_pin), is_admin),
+                        )
+                        user = c.execute(
+                            "SELECT * FROM users WHERE code=?",
+                            (code,),
+                        ).fetchone()
+                    else:
+                        c.execute(
+                            "UPDATE users SET name=?, team=?, pin_hash=?, is_admin=? WHERE code=?",
+                            (name, team, hash_pin(expected_pin), 1 if code == "ADMIN" else 0, code),
+                        )
+                        user = c.execute(
+                            "SELECT * FROM users WHERE code=?",
+                            (code,),
+                        ).fetchone()
                 st.session_state.user = dict(user)
                 st.session_state.pop("login_pin", None)
                 st.rerun()
-            else:
-                st.error("El nombre o el PIN no son correctos.")
 
     st.caption("Cada participante tiene un PIN diferente. No lo compartas.")
 
