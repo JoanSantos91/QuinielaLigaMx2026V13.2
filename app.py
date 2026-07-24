@@ -832,7 +832,7 @@ def login():
             with conn() as c:
                 user = c.execute(
                     "SELECT * FROM users WHERE code=? AND pin_hash=?",
-                    (code, hash_pin(pin)),
+                    (code.strip(), hash_pin(pin.strip())),
                 ).fetchone()
             if user:
                 st.session_state.user = dict(user)
