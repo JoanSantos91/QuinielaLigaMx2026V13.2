@@ -197,6 +197,18 @@ def team_logo(team: str) -> Path:
     return ASSETS / "team_logos" / f"{TEAM_SLUG.get(team, 'generic')}.png"
 
 
+def ensure_match_permissions_table():
+    """Crea la tabla de permisos por partido si todavía no existe."""
+    with conn() as c:
+        c.execute(
+            """CREATE TABLE IF NOT EXISTS match_permissions(
+                   match_id BIGINT PRIMARY KEY REFERENCES matches(id) ON DELETE CASCADE,
+                   predictions_enabled INTEGER NOT NULL DEFAULT 1,
+                   updated_at TEXT
+               )"""
+        )
+
+
 def init_db():
     schema = """
     CREATE TABLE IF NOT EXISTS users(
@@ -600,6 +612,7 @@ def restore_database_from_bytes(uploaded_bytes: bytes) -> tuple[bytes, dict]:
 
 
 def backup_restore_panel():
+    ensure_match_permissions_table()
     st.subheader("💾 Copias de seguridad SQL")
     st.caption(
         "Crea y restaura una copia completa de la quiniela en formato PostgreSQL (.sql). "
@@ -1617,10 +1630,11 @@ def admin_view():
         backup_restore_panel()
 
 
-@st.cache_resource(show_spinner=False)
 def ensure_database_ready():
+    """Verifica el esquema en cada arranque para crear tablas nuevas aunque Streamlit conserve caché."""
     ensure_atlas_logo()
     init_db()
+    ensure_match_permissions_table()
     return True
 
 
