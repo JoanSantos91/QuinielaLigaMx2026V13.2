@@ -161,6 +161,9 @@ def run_write(operation, retries=4):
         try:
             operation(c)
             c.commit()
+            # Invalida únicamente los datos guardados en caché después de una escritura.
+            # Así las lecturas siguen siendo rápidas y los cambios aparecen de inmediato.
+            st.cache_data.clear()
             return
         except psycopg.OperationalError:
             c.rollback()
@@ -173,6 +176,20 @@ def run_write(operation, retries=4):
             raise
         finally:
             c.close()
+
+
+@st.cache_data(ttl=20, show_spinner=False)
+def cached_fetchall(sql: str, params: tuple = ()):
+    """Lectura breve en caché para evitar conexiones repetidas en cada rerun de Streamlit."""
+    with conn() as c:
+        return c.execute(sql, params).fetchall()
+
+
+@st.cache_data(ttl=20, show_spinner=False)
+def cached_fetchone(sql: str, params: tuple = ()):
+    """Versión en caché para consultas que devuelven una sola fila."""
+    with conn() as c:
+        return c.execute(sql, params).fetchone()
 
 
 def now_local() -> datetime:
@@ -874,6 +891,7 @@ def match_score_card(match, previous=None, locked=False, prefix="p"):
         return home, away
 
 
+@st.cache_data(ttl=20, show_spinner=False)
 def standings():
     with conn() as c:
         users = c.execute("SELECT id,name,team FROM users WHERE is_admin=0").fetchall()
@@ -952,6 +970,7 @@ def render_pro_table(df, title, rank_col="POS", team_by_player=True, qualifier_t
         body.append(f'<tr class="{cls}">{"".join(cells)}</tr>')
     st.markdown(f'<div class="table-title"><h3>{title}</h3></div><div class="pro-table-wrap"><table class="pro-table"><thead><tr>{headers}</tr></thead><tbody>{"".join(body)}</tbody></table></div>',unsafe_allow_html=True)
 
+@st.cache_data(ttl=20, show_spinner=False)
 def round_submission_status(round_id):
     with conn() as c:
         total_matches = _scalar(c.execute("SELECT COUNT(*) FROM matches WHERE round_id=?", (round_id,)).fetchone())
@@ -1130,6 +1149,7 @@ def login():
 
     st.caption("Cada participante tiene un PIN diferente. No lo compartas.")
 
+@st.cache_data(ttl=20, show_spinner=False)
 def round_points(user_id, journey):
     with conn() as c:
         rows = c.execute("""
@@ -1140,6 +1160,7 @@ def round_points(user_id, journey):
     return sum(score_prediction(x["ph"],x["pa"],x["rh"],x["ra"]) for x in rows)
 
 
+@st.cache_data(ttl=20, show_spinner=False)
 def round_complete(journey):
     with conn() as c:
         row = c.execute("""
@@ -1149,6 +1170,7 @@ def round_complete(journey):
     return bool(row["n"] and row["n"] == row["d"])
 
 
+@st.cache_data(ttl=20, show_spinner=False)
 def duels_round(journey):
     with conn() as c:
         users = {u["team"]:u for u in c.execute("SELECT id,name,team FROM users WHERE is_admin=0")}
@@ -1169,6 +1191,7 @@ def duels_round(journey):
     return output
 
 
+@st.cache_data(ttl=20, show_spinner=False)
 def duel_standings(add_position=True):
     data = {name:{"JUGADOR":name,"EQUIPO":TEAM_SHORT.get(team,team),"PTS":0,"JG":0,"JE":0,"JP":0,"GF":0,"GC":0,"DIF":0} for _,name,team in PLAYERS}
     for journey in range(1,18):
@@ -1214,11 +1237,13 @@ def _survivor_lives_before_round(c, user_id, round_number=None):
     return max(0.0, lives)
 
 
+@st.cache_data(ttl=20, show_spinner=False)
 def survivor_lives(user_id, round_number=None):
     with conn() as c:
         return _survivor_lives_before_round(c, user_id, round_number)
 
 
+@st.cache_data(ttl=20, show_spinner=False)
 def survivor_status():
     with conn() as c:
         users=c.execute("SELECT id,name,team FROM users WHERE is_admin=0").fetchall()
@@ -1291,6 +1316,7 @@ def survivor_pick(user, round_row, locked):
             st.error("Ese equipo ya fue utilizado.")
 
 
+@st.cache_data(ttl=20, show_spinner=False)
 def champion_order():
     return standings().head(8)[["POS","USER_ID","JUGADOR","TOTAL"]]
 
@@ -1334,7 +1360,7 @@ def player_view(user):
     )
 
     if section == "Pronósticos":
-        with conn() as c: rounds=c.execute("SELECT * FROM rounds ORDER BY number").fetchall()
+        rounds = cached_fetchall("SELECT * FROM rounds ORDER BY number")
         choices={f"Jornada {r['number']}":r for r in rounds}
         round_row=choices[st.selectbox("Jornada",list(choices),key="player_round")]
         round_locked = not bool(round_row["is_open"])
@@ -1342,11 +1368,17 @@ def player_view(user):
             f'<div class="section-note">{"🟢 Jornada abierta · cada partido se habilita individualmente por el administrador" if not round_locked else "🔒 Jornada cerrada"}</div>',
             unsafe_allow_html=True,
         )
-        with conn() as c:
-            matches=c.execute("""SELECT m.*, COALESCE(mp.predictions_enabled, 1) AS predictions_open
+        matches = cached_fetchall(
+            """SELECT m.*, COALESCE(mp.predictions_enabled, 1) AS predictions_open
                FROM matches m LEFT JOIN match_permissions mp ON mp.match_id=m.id
-               WHERE m.round_id=? ORDER BY m.kickoff""",(round_row["id"],)).fetchall()
-            previous={x["match_id"]:x for x in c.execute("SELECT * FROM predictions WHERE user_id=? AND match_id IN (SELECT id FROM matches WHERE round_id=?)",(user["id"],round_row["id"]))}
+               WHERE m.round_id=? ORDER BY m.kickoff""",
+            (round_row["id"],),
+        )
+        prediction_rows = cached_fetchall(
+            "SELECT * FROM predictions WHERE user_id=? AND match_id IN (SELECT id FROM matches WHERE round_id=?)",
+            (user["id"], round_row["id"]),
+        )
+        previous = {x["match_id"]: x for x in prediction_rows}
 
         now = now_local()
         editable_match_ids = []
@@ -1404,7 +1436,7 @@ def player_view(user):
                 except sqlite3.OperationalError:
                     st.error("La base estaba ocupada. Espera unos segundos y vuelve a presionar Guardar.")
     elif section == "Grupo":
-        with conn() as c: rounds=c.execute("SELECT * FROM rounds ORDER BY number").fetchall()
+        rounds = cached_fetchall("SELECT * FROM rounds ORDER BY number")
         choices={f"Jornada {r['number']}":r for r in rounds}; round_row=choices[st.selectbox("Pronósticos del grupo",list(choices),key="group_round")]
         public_predictions(round_row["id"])
     elif section == "Survivor":
@@ -1432,8 +1464,7 @@ def admin_view():
     if section == "Resultados":
         st.subheader("Resultados oficiales")
         st.caption("Guarda cada partido al finalizar. La tabla, los puntos, Survivor y los pronósticos se actualizan inmediatamente.")
-        with conn() as c:
-            rounds = c.execute("SELECT * FROM rounds ORDER BY number").fetchall()
+        rounds = cached_fetchall("SELECT * FROM rounds ORDER BY number")
         options = {f"Jornada {r['number']}": r for r in rounds}
         if not options:
             st.error("No hay jornadas cargadas en Supabase. La aplicación intentará crearlas automáticamente al reiniciarse.")
@@ -1443,10 +1474,12 @@ def admin_view():
             return
         label = st.selectbox("Jornada", list(options), key="admin_results_round")
         selected = options[label]
-        with conn() as c:
-            matches = c.execute("""SELECT m.*, COALESCE(mp.predictions_enabled, 1) AS predictions_open
+        matches = cached_fetchall(
+            """SELECT m.*, COALESCE(mp.predictions_enabled, 1) AS predictions_open
                FROM matches m LEFT JOIN match_permissions mp ON mp.match_id=m.id
-               WHERE m.round_id=? ORDER BY m.kickoff""", (selected["id"],)).fetchall()
+               WHERE m.round_id=? ORDER BY m.kickoff""",
+            (selected["id"],),
+        )
 
         completed = sum(1 for m in matches if m["home_score"] is not None and m["away_score"] is not None)
         st.markdown(
@@ -1581,14 +1614,14 @@ def admin_view():
                 st.error("La base estaba ocupada. Espera unos segundos y vuelve a guardar.")
 
     elif section == "Jornadas":
-        with conn() as c: rounds=c.execute("SELECT * FROM rounds ORDER BY number").fetchall()
+        rounds = cached_fetchall("SELECT * FROM rounds ORDER BY number")
         for r in rounds:
             a,b=st.columns([4,1]); a.write(f"**Jornada {r['number']}** · {'ABIERTA' if r['is_open'] else 'CERRADA'} · límite {r['deadline']}")
             if b.button("Cerrar" if r["is_open"] else "Activar",key=f"r{r['id']}"):
                 run_write(lambda c,rid=r["id"]: c.execute("UPDATE rounds SET is_open=CASE WHEN COALESCE(is_open,0)=1 THEN 0 ELSE 1 END WHERE id=?",(rid,)))
                 st.rerun()
     elif section == "Entregas":
-        with conn() as c: rounds=c.execute("SELECT * FROM rounds ORDER BY number").fetchall()
+        rounds = cached_fetchall("SELECT * FROM rounds ORDER BY number")
         choices={f"Jornada {r['number']}":r for r in rounds}; r=choices[st.selectbox("Revisar entregas",list(choices),key="delivery_round")]
         status,complete,override=round_submission_status(r["id"]); ready=sum(x["ESTADO"]=="Listo" for x in status)
         a,b=st.columns(2); a.metric("Entregaron",f"{ready}/18"); b.metric("Publicación","Visible" if complete or override else "Bloqueada")
@@ -1630,8 +1663,9 @@ def admin_view():
         backup_restore_panel()
 
 
+@st.cache_resource(show_spinner=False)
 def ensure_database_ready():
-    """Verifica el esquema en cada arranque para crear tablas nuevas aunque Streamlit conserve caché."""
+    """Verifica el esquema una sola vez por proceso para acelerar cada interacción."""
     ensure_atlas_logo()
     init_db()
     ensure_match_permissions_table()
