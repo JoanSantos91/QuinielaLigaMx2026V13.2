@@ -1,19 +1,15 @@
+import streamlit as st
 import psycopg
 
-DATABASE_URL = "postgresql://postgres.foiepzxytaohquzutwkf:Cachncha5791@aws-1-us-west-2.pooler.supabase.com:5432/postgres""
-
 try:
-    conn = psycopg.connect(DATABASE_URL, sslmode="require")
+    DATABASE_URL = st.secrets["DATABASE_URL"]
 
-    cur = conn.cursor()
+    with psycopg.connect(DATABASE_URL, sslmode="require") as conn:
+        with conn.cursor() as cur:
+            cur.execute("SELECT COUNT(*) FROM users")
+            total = cur.fetchone()[0]
 
-    cur.execute("SELECT COUNT(*) FROM users")
-
-    print("Usuarios:", cur.fetchone()[0])
-
-    conn.close()
-
-    print("✅ Conexión correcta")
+    st.success(f"✅ Conexión correcta. Usuarios encontrados: {total}")
 
 except Exception as e:
-    print(e)
+    st.error(f"❌ Error: {e}")
