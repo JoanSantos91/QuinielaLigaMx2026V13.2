@@ -1,5 +1,6 @@
 import base64
 import hashlib
+import io
 import sqlite3
 import re
 
@@ -1655,6 +1656,204 @@ def render_prize_table():
 
 
 
+
+def _leaderboard_font(size: int, bold: bool = False):
+    """Carga una tipografía legible incluida en la mayoría de servidores Linux."""
+    from PIL import ImageFont
+
+    candidates = [
+        "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf" if bold else "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+        "/usr/share/fonts/truetype/liberation2/LiberationSans-Bold.ttf" if bold else "/usr/share/fonts/truetype/liberation2/LiberationSans-Regular.ttf",
+    ]
+    for candidate in candidates:
+        if Path(candidate).exists():
+            return ImageFont.truetype(candidate, size=size)
+    return ImageFont.load_default()
+
+
+def _fit_text(draw, value, font, max_width: int) -> str:
+    """Recorta texto únicamente cuando rebasa el ancho disponible."""
+    value = str(value)
+    if draw.textbbox((0, 0), value, font=font)[2] <= max_width:
+        return value
+    suffix = "…"
+    while value and draw.textbbox((0, 0), value + suffix, font=font)[2] > max_width:
+        value = value[:-1]
+    return value + suffix
+
+
+def create_standings_image(df: pd.DataFrame) -> bytes:
+    """Genera una imagen PNG lista para compartir con el diseño de la tabla general."""
+    try:
+        from PIL import Image, ImageDraw, ImageOps
+    except ModuleNotFoundError as exc:
+        raise RuntimeError(
+            "No fue posible generar la imagen porque falta Pillow. Agrega 'pillow' a requirements.txt."
+        ) from exc
+
+    if df is None or df.empty:
+        raise ValueError("No hay información en la tabla general para generar la imagen.")
+
+    # Formato vertical, ideal para compartir por WhatsApp sin perder legibilidad.
+    width = 1080
+    margin = 30
+    title_h = 100
+    header_h = 70
+    row_h = 92
+    footer_h = 42
+    height = margin * 2 + title_h + header_h + row_h * len(df) + footer_h
+
+    image = Image.new("RGB", (width, height), "#ffffff")
+    draw = ImageDraw.Draw(image)
+
+    font_title = _leaderboard_font(43, bold=True)
+    font_header = _leaderboard_font(21, bold=True)
+    font_pos = _leaderboard_font(25, bold=True)
+    font_name = _leaderboard_font(25, bold=True)
+    font_team = _leaderboard_font(16, bold=False)
+    font_stat = _leaderboard_font(24, bold=True)
+    font_stat_regular = _leaderboard_font(22, bold=False)
+    font_footer = _leaderboard_font(14, bold=False)
+
+    # Título centrado como en la referencia.
+    title = "Tabla general de la quiniela"
+    title_box = draw.textbbox((0, 0), title, font=font_title)
+    draw.text(((width - (title_box[2] - title_box[0])) / 2, margin + 8), title, font=font_title, fill="#07152b")
+
+    # Columnas: posición, participante, puntos, GF, GC y diferencia.
+    x0 = margin
+    table_w = width - margin * 2
+    col_widths = [105, 500, 115, 100, 100, 100]
+    # Ajustar exactamente al ancho disponible.
+    col_widths[1] += table_w - sum(col_widths)
+    xs = [x0]
+    for col_w in col_widths:
+        xs.append(xs[-1] + col_w)
+
+    y = margin + title_h
+    header_fill = "#f4f7fb"
+    border = "#d5dce6"
+    draw.rectangle([x0, y, x0 + table_w, y + header_h], fill=header_fill, outline=border, width=2)
+    headers = ["POS.", "PARTICIPANTE", "PTS", "GF", "GC", "DIF"]
+    for index, label in enumerate(headers):
+        if index == 1:
+            tx = xs[index] + 18
+        else:
+            box = draw.textbbox((0, 0), label, font=font_header)
+            tx = xs[index] + (col_widths[index] - (box[2] - box[0])) / 2
+        box = draw.textbbox((0, 0), label, font=font_header)
+        ty = y + (header_h - (box[3] - box[1])) / 2 - 2
+        draw.text((tx, ty), label, font=font_header, fill="#536176")
+        if index:
+            draw.line([xs[index], y, xs[index], y + header_h], fill=border, width=1)
+
+    # Filas de la tabla.
+    for _, row in df.iterrows():
+        y += header_h if y == margin + title_h else row_h
+        pos = int(row.get("POS", 0))
+        if pos == 1:
+            fill = "#2e8b20"
+            text_color = "#ffffff"
+            muted = "#ffffff"
+        elif pos == 2:
+            fill = "#287cbc"
+            text_color = "#ffffff"
+            muted = "#ffffff"
+        elif pos == 3:
+            fill = "#5896e8"
+            text_color = "#ffffff"
+            muted = "#ffffff"
+        else:
+            fill = "#ffffff" if pos % 2 == 0 else "#eef1f4"
+            text_color = "#07152b"
+            muted = "#25415f"
+
+        draw.rectangle([x0, y, x0 + table_w, y + row_h], fill=fill, outline=border, width=1)
+        for x_line in xs[1:-1]:
+            draw.line([x_line, y, x_line, y + row_h], fill=border if pos > 3 else "#ffffff55", width=1)
+
+        # Posición.
+        pos_text = str(pos)
+        box = draw.textbbox((0, 0), pos_text, font=font_pos)
+        draw.text((xs[0] + (col_widths[0] - (box[2] - box[0])) / 2,
+                   y + (row_h - (box[3] - box[1])) / 2 - 2),
+                  pos_text, font=font_pos, fill=text_color)
+
+        player_name = str(row.get("JUGADOR", ""))
+        team_short = str(row.get("EQUIPO", ""))
+        exactos = int(row.get("EXACTOS", 0))
+        team_full = next((team for _, name, team in PLAYERS if name == player_name), team_short)
+
+        # Escudo, con transparencia y contención para conservar proporciones.
+        logo_x = xs[1] + 20
+        logo_y = y + 14
+        logo_size = 64
+        try:
+            logo = Image.open(team_logo(team_full)).convert("RGBA")
+            bbox = logo.getbbox()
+            if bbox:
+                logo = logo.crop(bbox)
+            logo.thumbnail((logo_size, logo_size), Image.Resampling.LANCZOS)
+            canvas = Image.new("RGBA", (logo_size, logo_size), (0, 0, 0, 0))
+            canvas.alpha_composite(logo, ((logo_size - logo.width) // 2, (logo_size - logo.height) // 2))
+            image.paste(canvas, (logo_x, logo_y), canvas)
+        except Exception:
+            # El resto de la imagen continúa aunque un archivo de escudo falte.
+            pass
+
+        name_x = logo_x + logo_size + 16
+        available_name_width = xs[2] - name_x - 14
+        name_display = _fit_text(draw, player_name, font_name, available_name_width)
+        draw.text((name_x, y + 19), name_display, font=font_name, fill=text_color)
+        detail = f"{team_short} Exactos: {exactos}"
+        detail_display = _fit_text(draw, detail, font_team, available_name_width)
+        draw.text((name_x, y + 53), detail_display, font=font_team, fill=muted)
+
+        values = [
+            int(row.get("TOTAL", row.get("PTS", 0))),
+            int(row.get("DUELO_GF", row.get("GF", 0))),
+            int(row.get("DUELO_GC", row.get("GC", 0))),
+            int(row.get("DUELO_DIF", row.get("DIF", 0))),
+        ]
+        for value_index, value in enumerate(values, start=2):
+            displayed = f"{value:+d}" if value_index == 5 else str(value)
+            stat_font = font_stat if value_index == 2 else font_stat_regular
+            box = draw.textbbox((0, 0), displayed, font=stat_font)
+            draw.text((xs[value_index] + (col_widths[value_index] - (box[2] - box[0])) / 2,
+                       y + (row_h - (box[3] - box[1])) / 2 - 2),
+                      displayed, font=stat_font, fill=text_color)
+
+    footer_y = height - margin - footer_h + 8
+    generated = f"Actualizada {now_local().strftime('%d/%m/%Y · %H:%M')}"
+    draw.text((margin, footer_y), generated, font=font_footer, fill="#6b7789")
+    footer_right = "Quiniela Joan Santos · Apertura 2026"
+    box = draw.textbbox((0, 0), footer_right, font=font_footer)
+    draw.text((width - margin - (box[2] - box[0]), footer_y), footer_right, font=font_footer, fill="#6b7789")
+
+    output = io.BytesIO()
+    image.save(output, format="PNG", optimize=True)
+    return output.getvalue()
+
+
+def admin_standings_download_button(df: pd.DataFrame):
+    """Muestra exclusivamente al administrador la descarga de la tabla como PNG."""
+    try:
+        png_bytes = create_standings_image(df)
+    except Exception as exc:
+        st.error(f"No se pudo preparar la imagen de la tabla: {exc}")
+        return
+
+    st.download_button(
+        "📥 Descargar tabla general como imagen",
+        data=png_bytes,
+        file_name=f"tabla_general_quiniela_{now_local().strftime('%Y%m%d_%H%M')}.png",
+        mime="image/png",
+        type="primary",
+        use_container_width=True,
+        key="download_general_standings_png",
+    )
+    st.caption("Imagen vertical en alta calidad, lista para enviarse al grupo de WhatsApp.")
+
 def player_view(user):
     logo_data=_data_uri(team_logo(user["team"]))
     st.markdown(f'<div class="profile-card"><img src="{logo_data}" alt="{user["team"]}"><div><div class="name">{user["name"]}</div><div class="sub">Equipo de duelos: {TEAM_SHORT.get(user["team"],user["team"])}</div></div></div>',unsafe_allow_html=True)
@@ -1954,7 +2153,9 @@ def admin_view():
     elif section == "Premios":
         render_prize_table()
     elif section == "Tabla":
-        render_rank_table(standings(),"Tabla general de la quiniela")
+        table_df = standings()
+        admin_standings_download_button(table_df)
+        render_rank_table(table_df,"Tabla general de la quiniela")
     elif section == "Duelos":
         render_pro_table(duel_standings(),"Tabla general de duelos")
         journey=st.selectbox("Jornada de duelos",range(1,18),key="admin_duel_round")
