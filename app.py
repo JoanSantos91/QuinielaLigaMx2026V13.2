@@ -1695,35 +1695,37 @@ def create_standings_image(df: pd.DataFrame) -> bytes:
         raise ValueError("No hay información en la tabla general para generar la imagen.")
 
     # Formato vertical, ideal para compartir por WhatsApp sin perder legibilidad.
-    width = 1080
-    margin = 30
-    title_h = 100
-    header_h = 70
-    row_h = 92
-    footer_h = 42
+    # Lienzo más compacto: menos espacio vacío y tipografía más grande.
+    width = 900
+    margin = 22
+    title_h = 112
+    header_h = 66
+    row_h = 102
+    footer_h = 44
     height = margin * 2 + title_h + header_h + row_h * len(df) + footer_h
 
     image = Image.new("RGB", (width, height), "#ffffff")
     draw = ImageDraw.Draw(image)
 
-    font_title = _leaderboard_font(43, bold=True)
-    font_header = _leaderboard_font(21, bold=True)
-    font_pos = _leaderboard_font(25, bold=True)
-    font_name = _leaderboard_font(25, bold=True)
-    font_team = _leaderboard_font(16, bold=False)
-    font_stat = _leaderboard_font(24, bold=True)
-    font_stat_regular = _leaderboard_font(22, bold=False)
-    font_footer = _leaderboard_font(14, bold=False)
+    font_title = _leaderboard_font(50, bold=True)
+    font_header = _leaderboard_font(23, bold=True)
+    font_pos = _leaderboard_font(29, bold=True)
+    font_name = _leaderboard_font(29, bold=True)
+    font_team = _leaderboard_font(18, bold=False)
+    font_stat = _leaderboard_font(29, bold=True)
+    font_stat_regular = _leaderboard_font(27, bold=False)
+    font_footer = _leaderboard_font(15, bold=False)
 
     # Título centrado como en la referencia.
     title = "Tabla general de la quiniela"
     title_box = draw.textbbox((0, 0), title, font=font_title)
-    draw.text(((width - (title_box[2] - title_box[0])) / 2, margin + 8), title, font=font_title, fill="#07152b")
+    draw.text(((width - (title_box[2] - title_box[0])) / 2, margin + 10), title, font=font_title, fill="#07152b")
 
     # Columnas: posición, participante, puntos, GF, GC y diferencia.
     x0 = margin
     table_w = width - margin * 2
-    col_widths = [105, 500, 115, 100, 100, 100]
+    # POS y estadísticas más angostas; participante ocupa solo lo necesario.
+    col_widths = [70, 406, 95, 95, 95, 95]
     # Ajustar exactamente al ancho disponible.
     col_widths[1] += table_w - sum(col_widths)
     xs = [x0]
@@ -1737,7 +1739,7 @@ def create_standings_image(df: pd.DataFrame) -> bytes:
     headers = ["POS.", "PARTICIPANTE", "PTS", "GF", "GC", "DIF"]
     for index, label in enumerate(headers):
         if index == 1:
-            tx = xs[index] + 18
+            tx = xs[index] + 14
         else:
             box = draw.textbbox((0, 0), label, font=font_header)
             tx = xs[index] + (col_widths[index] - (box[2] - box[0])) / 2
@@ -1785,9 +1787,9 @@ def create_standings_image(df: pd.DataFrame) -> bytes:
         team_full = next((team for _, name, team in PLAYERS if name == player_name), team_short)
 
         # Escudo, con transparencia y contención para conservar proporciones.
-        logo_x = xs[1] + 20
-        logo_y = y + 14
-        logo_size = 64
+        logo_x = xs[1] + 12
+        logo_y = y + 15
+        logo_size = 72
         try:
             logo = Image.open(team_logo(team_full)).convert("RGBA")
             bbox = logo.getbbox()
@@ -1801,13 +1803,13 @@ def create_standings_image(df: pd.DataFrame) -> bytes:
             # El resto de la imagen continúa aunque un archivo de escudo falte.
             pass
 
-        name_x = logo_x + logo_size + 16
-        available_name_width = xs[2] - name_x - 14
+        name_x = logo_x + logo_size + 12
+        available_name_width = xs[2] - name_x - 10
         name_display = _fit_text(draw, player_name, font_name, available_name_width)
-        draw.text((name_x, y + 19), name_display, font=font_name, fill=text_color)
+        draw.text((name_x, y + 17), name_display, font=font_name, fill=text_color)
         detail = f"{team_short} Exactos: {exactos}"
         detail_display = _fit_text(draw, detail, font_team, available_name_width)
-        draw.text((name_x, y + 53), detail_display, font=font_team, fill=muted)
+        draw.text((name_x, y + 58), detail_display, font=font_team, fill=muted)
 
         values = [
             int(row.get("TOTAL", row.get("PTS", 0))),
@@ -1852,7 +1854,7 @@ def admin_standings_download_button(df: pd.DataFrame):
         use_container_width=True,
         key="download_general_standings_png",
     )
-    st.caption("Imagen vertical en alta calidad, lista para enviarse al grupo de WhatsApp.")
+    st.caption("Imagen compacta en alta calidad, con letras y números grandes para compartir por WhatsApp.")
 
 def player_view(user):
     logo_data=_data_uri(team_logo(user["team"]))
