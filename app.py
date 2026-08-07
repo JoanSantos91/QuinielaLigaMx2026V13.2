@@ -1683,7 +1683,7 @@ def _fit_text(draw, value, font, max_width: int) -> str:
 
 
 def create_standings_image(df: pd.DataFrame) -> bytes:
-    """Genera una imagen vertical uniforme y de alta legibilidad para WhatsApp."""
+    """Genera la tabla general como una imagen compacta y legible para WhatsApp."""
     try:
         from PIL import Image, ImageDraw
     except ModuleNotFoundError as exc:
@@ -1694,64 +1694,66 @@ def create_standings_image(df: pd.DataFrame) -> bytes:
     if df is None or df.empty:
         raise ValueError("No hay información en la tabla general para generar la imagen.")
 
-    # Formato vertical de alta resolución. Todos los renglones y textos usan
-    # exactamente las mismas dimensiones, incluyendo los tres primeros lugares.
-    width = 2000
-    margin = 18
-    title_h = 190
-    table_header_h = 112
-    row_h = 150
-    footer_h = 52
-    height = margin * 2 + title_h + table_header_h + row_h * len(df) + footer_h
+    # Proporciones inspiradas directamente en la tabla mostrada en la app:
+    # imagen angosta, columna de participante compacta y estadísticas cercanas.
+    width = 1300
+    margin = 8
+    title_h = 112
+    table_header_h = 72
+    row_h = 126
+    height = margin * 2 + title_h + table_header_h + row_h * len(df)
 
     image = Image.new("RGB", (width, height), "#ffffff")
     draw = ImageDraw.Draw(image)
 
-    # Tamaños fijos y uniformes para toda la tabla.
-    font_title = _leaderboard_font(112, bold=True)
-    font_header = _leaderboard_font(56, bold=True)
-    font_pos = _leaderboard_font(68, bold=True)
-    font_name = _leaderboard_font(54, bold=True)
-    font_detail = _leaderboard_font(38, bold=True)
-    font_stat = _leaderboard_font(66, bold=True)
-    font_footer = _leaderboard_font(22, bold=True)
+    # Tamaños uniformes: ningún nombre o número cambia de tamaño según la posición.
+    font_title = _leaderboard_font(66, bold=True)
+    font_header = _leaderboard_font(28, bold=True)
+    font_pos = _leaderboard_font(42, bold=True)
+    font_name = _leaderboard_font(40, bold=True)
+    font_detail = _leaderboard_font(25, bold=False)
+    font_stat = _leaderboard_font(42, bold=True)
 
     navy = "#06172f"
-    green = "#21851c"
-    blue_2 = "#086cc5"
-    blue_3 = "#3386e8"
-    border = "#cbd4df"
+    green = "#27851f"
+    blue_2 = "#287dbd"
+    blue_3 = "#5b98e7"
+    border = "#d4dbe4"
     white = "#ffffff"
     dark = "#071326"
 
-    # Título grande, limpio y centrado como en la referencia.
-    title = "TABLA GENERAL DE LA QUINIELA"
+    # Título en formato oración, igual a la referencia.
+    title = "Tabla general de la quiniela"
     title_box = draw.textbbox((0, 0), title, font=font_title)
     title_w = title_box[2] - title_box[0]
-    title_y = margin + (title_h - (title_box[3] - title_box[1])) // 2 - 10
-    draw.text(((width - title_w) / 2, title_y), title, font=font_title, fill=navy)
+    title_h_text = title_box[3] - title_box[1]
+    draw.text(
+        ((width - title_w) / 2, margin + (title_h - title_h_text) / 2 - 5),
+        title,
+        font=font_title,
+        fill=navy,
+    )
 
-    # Proporciones compactas: POS angosta, participante aprovechada y
-    # estadísticas equilibradas, sin espacios vacíos innecesarios.
     table_x = margin
     table_w = width - margin * 2
-    col_widths = [200, 940, 215, 215, 215, 215]
+    # POS 10 %, PARTICIPANTE 50 %, cada estadística 10 %.
+    col_widths = [126, 642, 129, 129, 129, 129]
     xs = [table_x]
     for col_w in col_widths:
         xs.append(xs[-1] + col_w)
 
     y = margin + title_h
-    draw.rectangle([table_x, y, table_x + table_w, y + table_header_h], fill=navy)
+    draw.rectangle([table_x, y, table_x + table_w, y + table_header_h], fill="#f5f7fa", outline=border, width=2)
     headers = ["POS.", "PARTICIPANTE", "PTS", "GF", "GC", "DIF"]
     for index, label in enumerate(headers):
         box = draw.textbbox((0, 0), label, font=font_header)
         tw = box[2] - box[0]
         th = box[3] - box[1]
         tx = xs[index] + (col_widths[index] - tw) / 2
-        ty = y + (table_header_h - th) / 2 - 5
-        draw.text((tx, ty), label, font=font_header, fill=white)
+        ty = y + (table_header_h - th) / 2 - 3
+        draw.text((tx, ty), label, font=font_header, fill="#526277")
         if index:
-            draw.line((xs[index], y, xs[index], y + table_header_h), fill="#8ba1b8", width=2)
+            draw.line((xs[index], y, xs[index], y + table_header_h), fill=border, width=2)
 
     current_y = y + table_header_h
     for row_index, (_, row) in enumerate(df.iterrows()):
@@ -1759,25 +1761,20 @@ def create_standings_image(df: pd.DataFrame) -> bytes:
         if pos == 1:
             fill = green
             text_color = white
-            detail_color = white
-            line_color = "#80c979"
+            line_color = "#5cad56"
         elif pos == 2:
             fill = blue_2
             text_color = white
-            detail_color = white
-            line_color = "#7cb5e7"
+            line_color = "#66a9db"
         elif pos == 3:
             fill = blue_3
             text_color = white
-            detail_color = white
-            line_color = "#a8ccfa"
+            line_color = "#93bdf1"
         else:
-            fill = "#ffffff" if row_index % 2 else "#f0f2f4"
+            fill = "#ffffff" if row_index % 2 else "#eef1f4"
             text_color = dark
-            detail_color = dark
             line_color = border
 
-        # Todas las filas tienen exactamente la misma altura.
         draw.rectangle(
             [table_x, current_y, table_x + table_w, current_y + row_h],
             fill=fill,
@@ -1787,13 +1784,12 @@ def create_standings_image(df: pd.DataFrame) -> bytes:
         for x_line in xs[1:-1]:
             draw.line((x_line, current_y, x_line, current_y + row_h), fill=line_color, width=2)
 
-        # Posición: mismo tamaño en todos los lugares.
         pos_text = str(pos)
         box = draw.textbbox((0, 0), pos_text, font=font_pos)
         draw.text(
             (
                 xs[0] + (col_widths[0] - (box[2] - box[0])) / 2,
-                current_y + (row_h - (box[3] - box[1])) / 2 - 5,
+                current_y + (row_h - (box[3] - box[1])) / 2 - 4,
             ),
             pos_text,
             font=font_pos,
@@ -1805,9 +1801,8 @@ def create_standings_image(df: pd.DataFrame) -> bytes:
         exactos = int(row.get("EXACTOS", 0))
         team_full = next((team for _, name, team in PLAYERS if name == player_name), team_short)
 
-        # Escudo con tamaño fijo.
-        logo_size = 112
-        logo_x = xs[1] + 34
+        logo_size = 78
+        logo_x = xs[1] + 28
         logo_y = current_y + (row_h - logo_size) // 2
         try:
             logo = Image.open(team_logo(team_full)).convert("RGBA")
@@ -1824,15 +1819,17 @@ def create_standings_image(df: pd.DataFrame) -> bytes:
         except Exception:
             pass
 
-        # Todos los nombres usan el mismo tamaño. Nunca se reduce la fuente;
-        # solo se recorta con puntos suspensivos si excede el ancho disponible.
-        name_x = logo_x + logo_size + 30
-        available_name_width = xs[2] - name_x - 26
+        name_x = logo_x + logo_size + 24
+        available_name_width = xs[2] - name_x - 18
         name_display = _fit_text(draw, player_name, font_name, available_name_width)
-        detail = f"{team_short} Exactos: {exactos}"
-        detail_display = _fit_text(draw, detail, font_detail, available_name_width)
-        draw.text((name_x, current_y + 25), name_display, font=font_name, fill=text_color)
-        draw.text((name_x, current_y + 88), detail_display, font=font_detail, fill=detail_color)
+        detail_display = _fit_text(
+            draw,
+            f"{team_short} Exactos: {exactos}",
+            font_detail,
+            available_name_width,
+        )
+        draw.text((name_x, current_y + 24), name_display, font=font_name, fill=text_color)
+        draw.text((name_x, current_y + 76), detail_display, font=font_detail, fill=text_color)
 
         values = [
             int(row.get("TOTAL", row.get("PTS", 0))),
@@ -1846,7 +1843,7 @@ def create_standings_image(df: pd.DataFrame) -> bytes:
             draw.text(
                 (
                     xs[value_index] + (col_widths[value_index] - (box[2] - box[0])) / 2,
-                    current_y + (row_h - (box[3] - box[1])) / 2 - 5,
+                    current_y + (row_h - (box[3] - box[1])) / 2 - 4,
                 ),
                 displayed,
                 font=font_stat,
@@ -1854,9 +1851,6 @@ def create_standings_image(df: pd.DataFrame) -> bytes:
             )
 
         current_y += row_h
-
-    generated = f"Actualizada {now_local().strftime('%d/%m/%Y · %H:%M')} · Quiniela Joan Santos"
-    draw.text((margin + 8, current_y + 14), generated, font=font_footer, fill="#586779")
 
     output = io.BytesIO()
     image.save(output, format="PNG", optimize=True, dpi=(240, 240))
