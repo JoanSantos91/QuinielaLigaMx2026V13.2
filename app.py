@@ -1683,7 +1683,7 @@ def _fit_text(draw, value, font, max_width: int) -> str:
 
 
 def create_standings_image(df: pd.DataFrame) -> bytes:
-    """Genera una imagen PNG lista para compartir con el diseño de la tabla general."""
+    """Genera un póster PNG de alta resolución listo para compartir por WhatsApp."""
     try:
         from PIL import Image, ImageDraw, ImageOps
     except ModuleNotFoundError as exc:
@@ -1694,100 +1694,200 @@ def create_standings_image(df: pd.DataFrame) -> bytes:
     if df is None or df.empty:
         raise ValueError("No hay información en la tabla general para generar la imagen.")
 
-    # Formato vertical, ideal para compartir por WhatsApp sin perder legibilidad.
-    width = 1400
-    margin = 36
-    title_h = 170
-    header_h = 92
-    row_h = 124
-    footer_h = 50
-    height = margin * 2 + title_h + header_h + row_h * len(df) + footer_h
+    # Lienzo de alta resolución. WhatsApp puede comprimirlo, pero el texto conserva nitidez.
+    width = 1800
+    margin = 48
+    hero_h = 360
+    table_header_h = 112
+    row_h = 136
+    footer_h = 88
+    height = margin * 2 + hero_h + table_header_h + row_h * len(df) + footer_h
 
-    image = Image.new("RGB", (width, height), "#ffffff")
+    image = Image.new("RGB", (width, height), "#f5f7fa")
     draw = ImageDraw.Draw(image)
 
-    font_title = _leaderboard_font(72, bold=True)
-    font_header = _leaderboard_font(34, bold=True)
-    font_pos = _leaderboard_font(38, bold=True)
-    font_name = _leaderboard_font(36, bold=True)
-    font_team = _leaderboard_font(25, bold=True)
-    font_stat = _leaderboard_font(40, bold=True)
-    font_stat_regular = _leaderboard_font(38, bold=True)
-    font_footer = _leaderboard_font(18, bold=False)
+    # Tipografías uniformes: ningún nombre cambia de tamaño según su longitud.
+    font_title = _leaderboard_font(104, bold=True)
+    font_subtitle = _leaderboard_font(33, bold=True)
+    font_chip_label = _leaderboard_font(23, bold=True)
+    font_chip_value = _leaderboard_font(31, bold=True)
+    font_header = _leaderboard_font(48, bold=True)
+    font_pos = _leaderboard_font(55, bold=True)
+    font_name = _leaderboard_font(48, bold=True)
+    font_team = _leaderboard_font(31, bold=True)
+    font_stat = _leaderboard_font(53, bold=True)
+    font_footer = _leaderboard_font(23, bold=True)
 
-    # Título centrado como en la referencia.
-    title = "Tabla general de la quiniela"
-    title_box = draw.textbbox((0, 0), title, font=font_title)
-    draw.text(((width - (title_box[2] - title_box[0])) / 2, margin + 18), title, font=font_title, fill="#07152b")
+    navy = "#06172f"
+    navy_2 = "#0b2d57"
+    blue = "#0877d9"
+    green = "#25851d"
+    light_blue = "#478fe5"
+    border = "#cbd4df"
 
-    # Columnas: posición, participante, puntos, GF, GC y diferencia.
+    # Fondo del encabezado con degradado profesional.
+    for i in range(hero_h):
+        ratio = i / max(hero_h - 1, 1)
+        c1 = (6, 23, 47)
+        c2 = (11, 45, 87)
+        color = tuple(int(c1[k] + (c2[k] - c1[k]) * ratio) for k in range(3))
+        draw.line((margin, margin + i, width - margin, margin + i), fill=color)
+    draw.rounded_rectangle(
+        [margin, margin, width - margin, margin + hero_h],
+        radius=30,
+        outline="#214d7f",
+        width=3,
+    )
+
+    # Logo Liga MX / balón, cuando exista en assets.
+    logo_area = 210
+    logo_path = ASSETS / "liga_mx_logo.png"
+    if not logo_path.exists():
+        logo_path = ASSETS / "liga_mx_balon.png"
+    try:
+        logo = Image.open(logo_path).convert("RGBA")
+        bbox = logo.getbbox()
+        if bbox:
+            logo = logo.crop(bbox)
+        logo.thumbnail((logo_area, 155), Image.Resampling.LANCZOS)
+        logo_canvas = Image.new("RGBA", (logo_area, 165), (255, 255, 255, 0))
+        logo_canvas.alpha_composite(
+            logo,
+            ((logo_area - logo.width) // 2, (165 - logo.height) // 2),
+        )
+        image.paste(logo_canvas, (margin + 38, margin + 37), logo_canvas)
+    except Exception:
+        pass
+
+    title = "TABLA GENERAL DE LA QUINIELA"
+    title_x = margin + 270
+    title_max_w = width - margin - title_x - 28
+    title_display = _fit_text(draw, title, font_title, title_max_w)
+    draw.text((title_x, margin + 42), title_display, font=font_title, fill="#ffffff")
+
+    completed_rounds = [j for j in range(1, 18) if round_complete(j)]
+    latest_round = max(completed_rounds) if completed_rounds else 0
+    subtitle = (
+        f"Apertura 2026 · Actualización después de la Jornada {latest_round}"
+        if latest_round
+        else "Apertura 2026 · Clasificación actual"
+    )
+    draw.text((title_x + 4, margin + 170), subtitle, font=font_subtitle, fill="#cfe5ff")
+
+    # Datos destacados del póster.
+    journey_winner = "Pendiente"
+    if latest_round:
+        try:
+            _, winners, _ = journey_points_matrix()
+            journey_winner = winners.get(latest_round) or "Empate pendiente"
+        except Exception:
+            journey_winner = "Pendiente"
+    max_exactos = int(pd.to_numeric(df.get("EXACTOS", 0), errors="coerce").fillna(0).max())
+    exact_leaders = df.loc[pd.to_numeric(df.get("EXACTOS", 0), errors="coerce").fillna(0) == max_exactos, "JUGADOR"].tolist()
+    exact_name = exact_leaders[0] if len(exact_leaders) == 1 else f"{len(exact_leaders)} jugadores"
+
+    chips = [
+        ("JORNADA ACTUAL", str(latest_round or "—")),
+        ("GANADOR DE JORNADA", journey_winner),
+        ("MÁS EXACTOS", f"{exact_name} · {max_exactos}"),
+    ]
+    chip_y = margin + 244
+    chip_gap = 18
+    chip_total_w = width - (title_x + 4) - margin - 28
+    chip_widths = [250, 430, chip_total_w - 250 - 430 - chip_gap * 2]
+    chip_x = title_x + 4
+    for (label, value), chip_w in zip(chips, chip_widths):
+        draw.rounded_rectangle(
+            [chip_x, chip_y, chip_x + chip_w, chip_y + 82],
+            radius=18,
+            fill="#ffffff18",
+            outline="#5f8fbe",
+            width=2,
+        )
+        draw.text((chip_x + 18, chip_y + 11), label, font=font_chip_label, fill="#9fc8ef")
+        value_display = _fit_text(draw, value, font_chip_value, chip_w - 36)
+        draw.text((chip_x + 18, chip_y + 39), value_display, font=font_chip_value, fill="#ffffff")
+        chip_x += chip_w + chip_gap
+
+    # Columnas más compactas y bien aprovechadas.
     x0 = margin
     table_w = width - margin * 2
-    col_widths = [82, 590, 162, 162, 162, 162]
-    # Ajustar exactamente al ancho disponible.
-    col_widths[1] += table_w - sum(col_widths)
+    col_widths = [120, 804, 195, 195, 195, 195]
     xs = [x0]
     for col_w in col_widths:
         xs.append(xs[-1] + col_w)
 
-    y = margin + title_h
-    header_fill = "#f4f7fb"
-    border = "#d5dce6"
-    draw.rectangle([x0, y, x0 + table_w, y + header_h], fill=header_fill, outline=border, width=2)
+    y = margin + hero_h + 20
+    draw.rounded_rectangle(
+        [x0, y, x0 + table_w, y + table_header_h],
+        radius=20,
+        fill=navy,
+        outline="#163d6a",
+        width=3,
+    )
     headers = ["POS.", "PARTICIPANTE", "PTS", "GF", "GC", "DIF"]
     for index, label in enumerate(headers):
-        if index == 1:
-            tx = xs[index] + 20
-        else:
-            box = draw.textbbox((0, 0), label, font=font_header)
-            tx = xs[index] + (col_widths[index] - (box[2] - box[0])) / 2
         box = draw.textbbox((0, 0), label, font=font_header)
-        ty = y + (header_h - (box[3] - box[1])) / 2 - 2
-        draw.text((tx, ty), label, font=font_header, fill="#536176")
+        tx = xs[index] + (col_widths[index] - (box[2] - box[0])) / 2
+        ty = y + (table_header_h - (box[3] - box[1])) / 2 - 5
+        draw.text((tx, ty), label, font=font_header, fill="#ffffff")
         if index:
-            draw.line([xs[index], y, xs[index], y + header_h], fill=border, width=1)
+            draw.line([xs[index], y + 5, xs[index], y + table_header_h - 5], fill="#65809e", width=2)
 
-    # Filas de la tabla.
+    # Todas las filas usan exactamente la misma altura y los mismos tamaños de letra.
+    current_y = y + table_header_h
     for _, row in df.iterrows():
-        y += header_h if y == margin + title_h else row_h
         pos = int(row.get("POS", 0))
         if pos == 1:
-            fill = "#2e8b20"
+            fill = green
             text_color = "#ffffff"
-            muted = "#ffffff"
+            muted = "#e8ffe5"
+            line_color = "#7ccf74"
         elif pos == 2:
-            fill = "#287cbc"
+            fill = "#0870c6"
             text_color = "#ffffff"
-            muted = "#ffffff"
+            muted = "#e2f3ff"
+            line_color = "#75b8e9"
         elif pos == 3:
-            fill = "#5896e8"
+            fill = light_blue
             text_color = "#ffffff"
-            muted = "#ffffff"
+            muted = "#eef6ff"
+            line_color = "#a8ccfa"
         else:
-            fill = "#ffffff" if pos % 2 == 0 else "#eef1f4"
-            text_color = "#07152b"
-            muted = "#25415f"
+            fill = "#ffffff" if pos % 2 == 0 else "#edf1f5"
+            text_color = "#061326"
+            muted = "#173854"
+            line_color = border
 
-        draw.rectangle([x0, y, x0 + table_w, y + row_h], fill=fill, outline=border, width=1)
+        draw.rectangle(
+            [x0, current_y, x0 + table_w, current_y + row_h],
+            fill=fill,
+            outline=line_color,
+            width=2,
+        )
         for x_line in xs[1:-1]:
-            draw.line([x_line, y, x_line, y + row_h], fill=border if pos > 3 else "#ffffff55", width=1)
+            draw.line([x_line, current_y, x_line, current_y + row_h], fill=line_color, width=2)
 
-        # Posición.
         pos_text = str(pos)
         box = draw.textbbox((0, 0), pos_text, font=font_pos)
-        draw.text((xs[0] + (col_widths[0] - (box[2] - box[0])) / 2,
-                   y + (row_h - (box[3] - box[1])) / 2 - 2),
-                  pos_text, font=font_pos, fill=text_color)
+        draw.text(
+            (
+                xs[0] + (col_widths[0] - (box[2] - box[0])) / 2,
+                current_y + (row_h - (box[3] - box[1])) / 2 - 5,
+            ),
+            pos_text,
+            font=font_pos,
+            fill=text_color,
+        )
 
         player_name = str(row.get("JUGADOR", ""))
         team_short = str(row.get("EQUIPO", ""))
         exactos = int(row.get("EXACTOS", 0))
         team_full = next((team for _, name, team in PLAYERS if name == player_name), team_short)
 
-        # Escudo, con transparencia y contención para conservar proporciones.
-        logo_x = xs[1] + 18
-        logo_y = y + 18
-        logo_size = 86
+        logo_x = xs[1] + 24
+        logo_y = current_y + 19
+        logo_size = 98
         try:
             logo = Image.open(team_logo(team_full)).convert("RGBA")
             bbox = logo.getbbox()
@@ -1795,19 +1895,21 @@ def create_standings_image(df: pd.DataFrame) -> bytes:
                 logo = logo.crop(bbox)
             logo.thumbnail((logo_size, logo_size), Image.Resampling.LANCZOS)
             canvas = Image.new("RGBA", (logo_size, logo_size), (0, 0, 0, 0))
-            canvas.alpha_composite(logo, ((logo_size - logo.width) // 2, (logo_size - logo.height) // 2))
+            canvas.alpha_composite(
+                logo,
+                ((logo_size - logo.width) // 2, (logo_size - logo.height) // 2),
+            )
             image.paste(canvas, (logo_x, logo_y), canvas)
         except Exception:
-            # El resto de la imagen continúa aunque un archivo de escudo falte.
             pass
 
-        name_x = logo_x + logo_size + 18
-        available_name_width = xs[2] - name_x - 14
+        name_x = logo_x + logo_size + 22
+        available_name_width = xs[2] - name_x - 20
         name_display = _fit_text(draw, player_name, font_name, available_name_width)
-        draw.text((name_x, y + 20), name_display, font=font_name, fill=text_color)
-        detail = f"{team_short} Exactos: {exactos}"
+        detail = f"{team_short} · Exactos: {exactos}"
         detail_display = _fit_text(draw, detail, font_team, available_name_width)
-        draw.text((name_x, y + 70), detail_display, font=font_team, fill=muted)
+        draw.text((name_x, current_y + 22), name_display, font=font_name, fill=text_color)
+        draw.text((name_x, current_y + 79), detail_display, font=font_team, fill=muted)
 
         values = [
             int(row.get("TOTAL", row.get("PTS", 0))),
@@ -1817,23 +1919,34 @@ def create_standings_image(df: pd.DataFrame) -> bytes:
         ]
         for value_index, value in enumerate(values, start=2):
             displayed = f"{value:+d}" if value_index == 5 else str(value)
-            stat_font = font_stat if value_index == 2 else font_stat_regular
-            box = draw.textbbox((0, 0), displayed, font=stat_font)
-            draw.text((xs[value_index] + (col_widths[value_index] - (box[2] - box[0])) / 2,
-                       y + (row_h - (box[3] - box[1])) / 2 - 2),
-                      displayed, font=stat_font, fill=text_color)
+            box = draw.textbbox((0, 0), displayed, font=font_stat)
+            draw.text(
+                (
+                    xs[value_index] + (col_widths[value_index] - (box[2] - box[0])) / 2,
+                    current_y + (row_h - (box[3] - box[1])) / 2 - 5,
+                ),
+                displayed,
+                font=font_stat,
+                fill=text_color,
+            )
 
-    footer_y = height - margin - footer_h + 8
+        current_y += row_h
+
+    footer_y = current_y + 26
     generated = f"Actualizada {now_local().strftime('%d/%m/%Y · %H:%M')}"
-    draw.text((margin, footer_y), generated, font=font_footer, fill="#6b7789")
+    draw.text((margin + 8, footer_y), generated, font=font_footer, fill="#536176")
     footer_right = "Quiniela Joan Santos · Apertura 2026"
     box = draw.textbbox((0, 0), footer_right, font=font_footer)
-    draw.text((width - margin - (box[2] - box[0]), footer_y), footer_right, font=font_footer, fill="#6b7789")
+    draw.text(
+        (width - margin - 8 - (box[2] - box[0]), footer_y),
+        footer_right,
+        font=font_footer,
+        fill="#536176",
+    )
 
     output = io.BytesIO()
-    image.save(output, format="PNG", optimize=True)
+    image.save(output, format="PNG", optimize=True, dpi=(220, 220))
     return output.getvalue()
-
 
 def admin_standings_download_button(df: pd.DataFrame):
     """Muestra exclusivamente al administrador la descarga de la tabla como PNG."""
