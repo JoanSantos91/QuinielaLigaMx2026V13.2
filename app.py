@@ -1,5 +1,6 @@
 import base64
 import hashlib
+import html
 import io
 import sqlite3
 import re
