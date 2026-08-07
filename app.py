@@ -1856,6 +1856,238 @@ def create_standings_image(df: pd.DataFrame) -> bytes:
     image.save(output, format="PNG", optimize=True, dpi=(240, 240))
     return output.getvalue()
 
+
+
+def _plain_cell(value):
+    """Convierte contenido HTML de las tablas en texto legible para una imagen PNG."""
+    if value is None:
+        return "—"
+    text = str(value)
+    text = re.sub(r"<br\s*/?>", " · ", text, flags=re.I)
+    text = re.sub(r"<[^>]+>", "", text)
+    text = html.unescape(text)
+    return " ".join(text.split()) or "—"
+
+
+def _draw_table_image(title, df, *, subtitle="", participant_col=None, landscape=False,
+                      top_colors=True, cell_status=None, max_col_width=420):
+    """Genera una tabla PNG profesional y de alta resolución para compartir por WhatsApp."""
+    try:
+        from PIL import Image, ImageDraw
+    except ModuleNotFoundError as exc:
+        raise RuntimeError("Falta Pillow. Agrega 'pillow' a requirements.txt.") from exc
+
+    if df is None or df.empty:
+        raise ValueError("No hay información disponible para generar la imagen.")
+
+    work = df.copy()
+    work.columns = [str(c) for c in work.columns]
+    cols = list(work.columns)
+    participant_col = participant_col if participant_col in cols else None
+
+    scale = 2
+    row_h = 66 * scale
+    header_h = 58 * scale
+    title_h = (112 if subtitle else 94) * scale
+    margin = 18 * scale
+
+    # Anchos pensados para mantener texto grande y legible.
+    widths = []
+    for col in cols:
+        label = col.upper()
+        if col == participant_col or label in ("JUGADOR", "PARTICIPANTE"):
+            w = 360 * scale
+        elif label in ("EQUIPO", "SURVIVOR"):
+            w = 180 * scale
+        elif label.startswith("J") and label[1:].isdigit():
+            w = 92 * scale
+        elif label in ("POS", "POS.", "PTS", "GF", "GC", "DIF", "VIDAS", "GANADAS", "JG", "JE", "JP"):
+            w = 100 * scale
+        else:
+            # Para partidos de pronósticos se permite más espacio.
+            w = min(max_col_width * scale, max(130 * scale, (len(label) * 14 + 32) * scale))
+        widths.append(w)
+
+    table_w = sum(widths)
+    min_w = (1500 if landscape else 1120) * scale
+    width = max(min_w, table_w + margin * 2)
+    height = margin * 2 + title_h + header_h + row_h * len(work)
+
+    img = Image.new("RGB", (width, height), "#ffffff")
+    draw = ImageDraw.Draw(img)
+    navy = "#071a35"
+    border = "#d6dde7"
+    header_fill = "#f5f7fa"
+    stripe = "#f0f3f6"
+    green = "#27851f"
+    blue2 = "#1768ad"
+    blue3 = "#4f91e6"
+
+    f_title = _leaderboard_font(42 * scale, True)
+    f_sub = _leaderboard_font(17 * scale, False)
+    f_head = _leaderboard_font(20 * scale, True)
+    f_main = _leaderboard_font(22 * scale, True)
+    f_small = _leaderboard_font(16 * scale, False)
+    f_num = _leaderboard_font(24 * scale, True)
+
+    tb = draw.textbbox((0, 0), title, font=f_title)
+    draw.text(((width-(tb[2]-tb[0]))/2, margin), title, font=f_title, fill=navy)
+    if subtitle:
+        sb = draw.textbbox((0, 0), subtitle, font=f_sub)
+        draw.text(((width-(sb[2]-sb[0]))/2, margin + 60*scale), subtitle, font=f_sub, fill="#53657a")
+
+    x0 = margin
+    y0 = margin + title_h
+    xs = [x0]
+    for w in widths:
+        xs.append(xs[-1] + w)
+
+    draw.rounded_rectangle([x0, y0, xs[-1], y0+header_h+row_h*len(work)], radius=14*scale,
+                           fill="#ffffff", outline=border, width=2*scale)
+    draw.rectangle([x0, y0, xs[-1], y0+header_h], fill=header_fill)
+    for i, col in enumerate(cols):
+        label = str(col).upper()
+        box = draw.textbbox((0,0), label, font=f_head)
+        draw.text((xs[i]+(widths[i]-(box[2]-box[0]))/2,
+                   y0+(header_h-(box[3]-box[1]))/2-2*scale), label, font=f_head, fill=navy)
+        if i:
+            draw.line((xs[i], y0, xs[i], y0+header_h+row_h*len(work)), fill=border, width=1*scale)
+
+    for ridx, (_, row) in enumerate(work.iterrows()):
+        y = y0 + header_h + ridx*row_h
+        pos = None
+        for pcol in ("POS", "POS."):
+            if pcol in cols:
+                try: pos = int(float(row[pcol]))
+                except Exception: pass
+        fill = "#ffffff" if ridx % 2 == 0 else stripe
+        text = navy
+        if top_colors and pos == 1: fill, text = green, "#ffffff"
+        elif top_colors and pos == 2: fill, text = blue2, "#ffffff"
+        elif top_colors and pos == 3: fill, text = blue3, "#ffffff"
+        draw.rectangle([x0, y, xs[-1], y+row_h], fill=fill)
+        draw.line((x0, y+row_h, xs[-1], y+row_h), fill=border, width=1*scale)
+
+        for cidx, col in enumerate(cols):
+            raw = row[col]
+            value = _plain_cell(raw)
+            custom = cell_status(row, col, raw) if cell_status else None
+            cell_fill = custom[0] if custom else None
+            cell_text = custom[1] if custom else text
+            if cell_fill:
+                pad=4*scale
+                draw.rounded_rectangle([xs[cidx]+pad, y+pad, xs[cidx+1]-pad, y+row_h-pad],
+                                       radius=8*scale, fill=cell_fill)
+            if col == participant_col or col in ("JUGADOR", "PARTICIPANTE"):
+                name = value
+                team = ""
+                if col in row.index and "EQUIPO" in row.index:
+                    team = _plain_cell(row.get("EQUIPO", ""))
+                maxw = widths[cidx]-30*scale
+                name = _fit_text(draw, name, f_main, maxw)
+                draw.text((xs[cidx]+15*scale, y+10*scale), name, font=f_main, fill=cell_text)
+                if team and col != "EQUIPO":
+                    detail = _fit_text(draw, team, f_small, maxw)
+                    draw.text((xs[cidx]+15*scale, y+39*scale), detail, font=f_small, fill=cell_text)
+            else:
+                font = f_num if (value.replace('+','').replace('-','').replace('.','',1).isdigit() or len(value)<=5) else f_small
+                value = _fit_text(draw, value, font, widths[cidx]-16*scale)
+                box = draw.textbbox((0,0), value, font=font)
+                draw.text((xs[cidx]+(widths[cidx]-(box[2]-box[0]))/2,
+                           y+(row_h-(box[3]-box[1]))/2-2*scale), value, font=font, fill=cell_text)
+
+    out = io.BytesIO()
+    img.save(out, format="PNG", optimize=True, dpi=(220,220))
+    return out.getvalue()
+
+
+def predictions_image_data(round_id):
+    """Devuelve una matriz con todos los pronósticos y la elección Survivor de una jornada."""
+    with conn() as c:
+        round_row = c.execute("SELECT number FROM rounds WHERE id=?", (round_id,)).fetchone()
+        matches = c.execute("SELECT * FROM matches WHERE round_id=? ORDER BY kickoff", (round_id,)).fetchall()
+        users = c.execute("SELECT id,name,team FROM users WHERE is_admin=0 ORDER BY CASE WHEN name='Joan Santos' THEN 0 ELSE 1 END,name").fetchall()
+        preds = c.execute("""SELECT p.user_id,p.match_id,p.home_score,p.away_score FROM predictions p
+                             JOIN matches m ON m.id=p.match_id WHERE m.round_id=?""", (round_id,)).fetchall()
+        survivor = {r["user_id"]: TEAM_SHORT.get(r["team"], r["team"]) for r in c.execute(
+            "SELECT user_id,team FROM survivor_picks WHERE round_id=?", (round_id,)).fetchall()}
+    lookup={(r["user_id"],r["match_id"]):f'{r["home_score"]}-{r["away_score"]}' for r in preds}
+    rows=[]
+    for u in users:
+        item={"PARTICIPANTE":u["name"]}
+        for i,m in enumerate(matches,1):
+            home=TEAM_SHORT.get(m["home_team"],m["home_team"])
+            away=TEAM_SHORT.get(m["away_team"],m["away_team"])
+            item[f"P{i}\n{home}-{away}"]=lookup.get((u["id"],m["id"]),"—")
+        item["SURVIVOR"]=survivor.get(u["id"],"—")
+        rows.append(item)
+    return pd.DataFrame(rows), int(round_row["number"])
+
+
+def admin_predictions_download_button(round_id):
+    try:
+        df, number = predictions_image_data(round_id)
+        data = _draw_table_image(f"Pronósticos · Jornada {number}", df,
+                                 subtitle="Incluye todos los marcadores y la elección Survivor",
+                                 participant_col="PARTICIPANTE", landscape=True, top_colors=False, max_col_width=180)
+        st.download_button("📥 Descargar pronósticos como imagen", data,
+                           f"pronosticos_jornada_{number}.png", "image/png",
+                           use_container_width=True, key=f"download_predictions_{round_id}")
+    except Exception as exc:
+        st.error(f"No se pudo generar la imagen de pronósticos: {exc}")
+
+
+def admin_points_download_button():
+    try:
+        df, winners, tied = journey_points_matrix()
+        shown=df.rename(columns={"JUGADOR":"PARTICIPANTE","JORNADAS GANADAS":"GANADAS"})
+        def status(row,col,raw):
+            if col.startswith("J") and col[1:].isdigit():
+                j=int(col[1:]); name=row["PARTICIPANTE"]
+                if winners.get(j)==name: return ("#27851f","#ffffff")
+                if name in tied.get(j,[]): return ("#f4c542","#071a35")
+            return None
+        data=_draw_table_image("Puntos por jornada", shown, subtitle="Verde: ganador · Amarillo: empate pendiente",
+                               participant_col="PARTICIPANTE", landscape=True, top_colors=False, cell_status=status)
+        st.download_button("📥 Descargar puntos como imagen", data, "puntos_por_jornada.png", "image/png",
+                           use_container_width=True, key="download_points_image")
+    except Exception as exc:
+        st.error(f"No se pudo generar la imagen de puntos: {exc}")
+
+
+def admin_duels_download_buttons(journey):
+    try:
+        general=duel_standings()
+        data=_draw_table_image("Tabla general de duelos", general, participant_col="JUGADOR", top_colors=True)
+        st.download_button("📥 Descargar tabla general de duelos", data, "tabla_general_duelos.png", "image/png",
+                           use_container_width=True, key="download_duels_general")
+        detail=pd.DataFrame(duels_round(journey))
+        data2=_draw_table_image(f"Duelos · Jornada {journey}", detail, participant_col="LOCAL", landscape=True,
+                                top_colors=False, max_col_width=250)
+        st.download_button("📥 Descargar duelos de la jornada", data2, f"duelos_jornada_{journey}.png", "image/png",
+                           use_container_width=True, key=f"download_duels_round_{journey}")
+    except Exception as exc:
+        st.error(f"No se pudo generar la imagen de duelos: {exc}")
+
+
+def admin_survivor_download_button():
+    try:
+        df=survivor_status(is_admin=True).copy()
+        def status(row,col,raw):
+            if str(col).startswith("J") and str(col)[1:].isdigit():
+                text=_plain_cell(raw)
+                if "✓" in text: return ("#2e9b43","#ffffff")
+                if "=" in text: return ("#f4c542","#071a35")
+                if "✕" in text: return ("#d84040","#ffffff")
+                return ("#dfe4ea","#53657a")
+            return None
+        data=_draw_table_image("Tabla Survivor", df, subtitle="Verde: ganó · Amarillo: empató · Rojo: perdió",
+                               participant_col="JUGADOR", landscape=True, top_colors=False, cell_status=status)
+        st.download_button("📥 Descargar Survivor como imagen", data, "tabla_survivor.png", "image/png",
+                           use_container_width=True, key="download_survivor_image")
+    except Exception as exc:
+        st.error(f"No se pudo generar la imagen de Survivor: {exc}")
+
 def admin_standings_download_button(df: pd.DataFrame):
     """Muestra exclusivamente al administrador la descarga de la tabla como PNG."""
     try:
@@ -1968,6 +2200,7 @@ def player_view(user):
         choices={f"Jornada {r['number']}":r for r in rounds}; round_row=choices[st.selectbox("Pronósticos del grupo",list(choices),key="group_round")]
         public_predictions(round_row["id"])
     elif section == "Puntos":
+        admin_points_download_button()
         render_journey_points_table()
     elif section == "Premios":
         render_prize_table()
@@ -2163,6 +2396,7 @@ def admin_view():
             run_write(lambda c: c.execute("UPDATE rounds SET reveal_override=? WHERE id=?",(0 if override else 1,r["id"])))
             st.rerun()
         render_pro_table(pd.DataFrame(status),"Control de entregas",rank_col="",team_by_player=True)
+        admin_predictions_download_button(r["id"])
         public_predictions(r["id"])
     elif section == "Participantes":
         accesses=pd.DataFrame([(code,name,TEAM_SHORT.get(team,team),PLAYER_PINS[code]) for code,name,team in PLAYERS],columns=["CLAVE","PARTICIPANTE","EQUIPO","PIN"])
@@ -2170,6 +2404,7 @@ def admin_view():
         render_pro_table(accesses,"Accesos privados",rank_col="",team_by_player=True)
         st.download_button("Descargar accesos",accesses.to_csv(index=False).encode("utf-8-sig"),"accesos_privados.csv")
     elif section == "Puntos":
+        admin_points_download_button()
         render_journey_points_table()
     elif section == "Premios":
         render_prize_table()
@@ -2180,9 +2415,11 @@ def admin_view():
     elif section == "Duelos":
         render_pro_table(duel_standings(),"Tabla general de duelos")
         journey=st.selectbox("Jornada de duelos",range(1,18),key="admin_duel_round")
+        admin_duels_download_buttons(journey)
         render_pro_table(pd.DataFrame(duels_round(journey)),f"Duelos · Jornada {journey}",rank_col="",team_by_player=False)
     elif section == "Survivor":
         st.markdown('<div class="section-banner"><h3>🛡️ Survivor</h3><p>Verde: ganó · Amarillo: empató · Rojo: perdió · Gris: pendiente.</p></div>', unsafe_allow_html=True)
+        admin_survivor_download_button()
         render_pro_table(survivor_status(is_admin=True),"Tabla Survivor")
     elif section == "Campeón":
         render_pro_table(champion_order().drop(columns=["USER_ID"]),"Orden de elección",qualifier_top8=True)
