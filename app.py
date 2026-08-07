@@ -1263,13 +1263,25 @@ def survivor_lives(user_id, round_number=None):
 
 
 @st.cache_data(ttl=20, show_spinner=False)
-def survivor_status():
+def survivor_status(viewer_user_id=None, is_admin=False):
     with conn() as c:
         users = c.execute("SELECT id,name,team FROM users WHERE is_admin=0").fetchall()
-        picks = c.execute("""SELECT sp.user_id,sp.team,r.number,m.home_team,m.away_team,m.home_score,m.away_score
+        picks = c.execute("""SELECT sp.user_id,sp.team,r.id round_id,r.number,r.reveal_override,
+                                  m.home_team,m.away_team,m.home_score,m.away_score
                            FROM survivor_picks sp JOIN rounds r ON r.id=sp.round_id
                            LEFT JOIN matches m ON m.round_id=r.id AND (m.home_team=sp.team OR m.away_team=sp.team)
                            ORDER BY r.number""").fetchall()
+        rounds = c.execute("SELECT id,number,reveal_override FROM rounds ORDER BY number").fetchall()
+
+    # La elección de cada jornada solo se revela al grupo cuando todos terminaron
+    # sus pronósticos y Survivor, o cuando el administrador autoriza la publicación.
+    reveal_by_round = {}
+    if is_admin:
+        reveal_by_round = {int(r["number"]): True for r in rounds}
+    else:
+        for r in rounds:
+            _, complete, override = round_submission_status(r["id"])
+            reveal_by_round[int(r["number"])] = bool(complete or override)
     data = {
         u["id"]: {"JUGADOR":u["name"], "EQUIPO":TEAM_SHORT.get(u["team"],u["team"]), "VIDAS":3.0, "ELECCIONES":0}
         for u in users
@@ -1297,10 +1309,19 @@ def survivor_status():
                 result_icon = "✕"
                 result_label = "Perdió"
                 data[row["user_id"]]["VIDAS"] -= 1
-        data[row["user_id"]][f"J{row['number']}"] = (
-            f'<span class="survivor-result {result_class}" title="{result_label}">'
-            f'{result_icon} {team_name}</span>'
+        can_reveal_pick = (
+            is_admin
+            or reveal_by_round.get(int(row["number"]), False)
+            or (viewer_user_id is not None and int(row["user_id"]) == int(viewer_user_id))
         )
+        if can_reveal_pick:
+            cell_value = (
+                f'<span class="survivor-result {result_class}" title="{result_label}">'
+                f'{result_icon} {team_name}</span>'
+            )
+        else:
+            cell_value = '<span class="survivor-result survivor-pending" title="Elección oculta">🔒 Oculto</span>'
+        data[row["user_id"]][f"J{row['number']}"] = cell_value
         data[row["user_id"]]["ELECCIONES"] += 1
     for item in data.values():
         item["VIDAS"] = max(0.0, item["VIDAS"])
@@ -1501,24 +1522,31 @@ def render_journey_points_table():
 
 @st.cache_data(ttl=20, show_spinner=False)
 def prize_table():
-    """Calcula el saldo de premios acumulado sin guardar valores duplicados en la base."""
+    """Calcula el saldo acumulado y detalla el premio obtenido en cada jornada."""
     general = standings().copy()
     duels = duel_standings().copy()
     survivor = survivor_status().copy()
     _, journey_winners, _ = journey_points_matrix()
 
-    rows = []
     names = [name for _, name, _ in PLAYERS]
-    journey_prizes = {name: 0 for name in names}
-    for winner in journey_winners.values():
-        if winner:
-            journey_prizes[winner] += 100
+    team_by_name = {name: TEAM_SHORT.get(team, team) for _, name, team in PLAYERS}
+
+    # Premio individual por jornada. Cada columna J1...J17 se actualiza
+    # automáticamente en cuanto queda definido el ganador mediante el desempate progresivo.
+    journey_awards = {
+        name: {f"J{j}": 0 for j in range(1, 18)}
+        for name in names
+    }
+    for journey, winner in journey_winners.items():
+        if winner in journey_awards:
+            journey_awards[winner][f"J{journey}"] = 100
 
     regular_prizes = {name: 0 for name in names}
     duel_prizes = {name: 0 for name in names}
     survivor_prizes = {name: 0 for name in names}
     champion_prizes = {name: 0 for name in names}
 
+    # Los premios de fase regular y duelos se acreditan al terminar J17.
     regular_complete = round_complete(17)
     if regular_complete and not general.empty:
         for position, amount in ((1, 3000), (2, 500), (3, 300)):
@@ -1532,11 +1560,14 @@ def prize_table():
             if not match.empty:
                 duel_prizes[match.iloc[0]] = amount
 
-    if not survivor.empty and survivor["ELECCIONES"].sum() > 0:
-        alive = survivor[survivor["VIDAS"] > 0]
-        if len(alive) == 1 and len(survivor[survivor["VIDAS"] <= 0]) == len(survivor) - 1:
+    # Survivor se acredita únicamente cuando queda un solo jugador con vida.
+    if not survivor.empty and "ELECCIONES" in survivor.columns and survivor["ELECCIONES"].sum() > 0:
+        alive = survivor[pd.to_numeric(survivor["VIDAS"], errors="coerce").fillna(0) > 0]
+        eliminated = survivor[pd.to_numeric(survivor["VIDAS"], errors="coerce").fillna(0) <= 0]
+        if len(alive) == 1 and len(eliminated) == len(survivor) - 1:
             survivor_prizes[alive.iloc[0]["JUGADOR"]] = 1000
 
+    # Campeón se acredita al participante cuya elección coincide con el campeón oficial.
     with conn() as c:
         official_row = c.execute("SELECT value FROM settings WHERE key='official_champion'").fetchone()
         official_champion = official_row["value"] if official_row and official_row["value"] else ""
@@ -1549,36 +1580,78 @@ def prize_table():
             if pick["team"] == official_champion:
                 champion_prizes[pick["name"]] = 1000
 
-    team_by_name = {name: TEAM_SHORT.get(team, team) for _, name, team in PLAYERS}
+    rows = []
     for name in names:
         entry = -500
-        total = entry + journey_prizes[name] + survivor_prizes[name] + regular_prizes[name] + duel_prizes[name] + champion_prizes[name]
-        rows.append({
+        journey_total = sum(journey_awards[name].values())
+        total = (
+            entry
+            + journey_total
+            + survivor_prizes[name]
+            + regular_prizes[name]
+            + duel_prizes[name]
+            + champion_prizes[name]
+        )
+        row = {
             "JUGADOR": name,
             "EQUIPO": team_by_name[name],
             "ENTRADA": entry,
-            "JORNADAS": journey_prizes[name],
+            **journey_awards[name],
+            "TOTAL JORNADAS": journey_total,
             "SURVIVOR": survivor_prizes[name],
             "FASE REGULAR": regular_prizes[name],
             "DUELOS": duel_prizes[name],
             "CAMPEÓN": champion_prizes[name],
-            "TOTAL": total,
-        })
-    return pd.DataFrame(rows).sort_values(["TOTAL", "JUGADOR"], ascending=[False, True]).reset_index(drop=True)
+            "SALDO TOTAL": total,
+        }
+        rows.append(row)
+
+    return pd.DataFrame(rows).sort_values(
+        ["SALDO TOTAL", "JUGADOR"], ascending=[False, True]
+    ).reset_index(drop=True)
 
 
 def render_prize_table():
-    st.markdown("### Premios y saldo acumulado")
-    st.caption("Todos comienzan con -$500 por la inscripción. Los premios se agregan automáticamente cuando quedan definidos.")
+    st.markdown(
+        '<div class="section-banner"><h3>🏆 Premios y saldo acumulado</h3>'
+        '<p>Los premios se acreditan automáticamente conforme se define cada ganador.</p></div>',
+        unsafe_allow_html=True,
+    )
+    st.caption(
+        "Todos comienzan con -$500 por la inscripción. Cada jornada ganada suma $100. "
+        "Survivor, fase regular, duelos y campeón se agregan cuando el resultado correspondiente queda definido."
+    )
+
     df = prize_table()
     if df.empty:
         st.info("Todavía no hay información para mostrar.")
         return
-    money_cols = ["ENTRADA", "JORNADAS", "SURVIVOR", "FASE REGULAR", "DUELOS", "CAMPEÓN", "TOTAL"]
+
+    journey_cols = [f"J{i}" for i in range(1, 18)]
+    money_cols = [
+        "ENTRADA", *journey_cols, "TOTAL JORNADAS", "SURVIVOR",
+        "FASE REGULAR", "DUELOS", "CAMPEÓN", "SALDO TOTAL"
+    ]
     shown = df.copy()
     for col in money_cols:
-        shown[col] = shown[col].map(lambda value: f"${int(value):,}")
-    render_pro_table(shown, "Tabla de premios", rank_col="", team_by_player=True)
+        shown[col] = shown[col].map(lambda value: f"${int(value):,}" if int(value) != 0 else "—")
+    # La entrada debe mostrar siempre -$500, no un guion.
+    shown["ENTRADA"] = df["ENTRADA"].map(lambda value: f"${int(value):,}")
+    shown["SALDO TOTAL"] = df["SALDO TOTAL"].map(lambda value: f"${int(value):,}")
+
+    render_pro_table(shown, "Tabla de premios por jornada", rank_col="", team_by_player=True)
+
+    with st.expander("Ver reglas de premios", expanded=False):
+        st.markdown(
+            """
+            - **Entrada:** -$500 por participante.
+            - **Cada jornada:** $100 al ganador definitivo de esa jornada.
+            - **Survivor:** $1,000 al último participante con vida.
+            - **Fase regular:** 1.º $3,000 · 2.º $500 · 3.º $300.
+            - **Duelos:** 1.º $1,000 · 2.º $300 · 3.º $200.
+            - **Campeón:** $1,000 a quien acierte al equipo campeón.
+            """
+        )
 
 
 
@@ -1681,7 +1754,8 @@ def player_view(user):
     elif section == "Survivor":
         st.markdown('<div class="section-banner"><h3>🛡️ Survivor</h3><p>Verde: ganó · Amarillo: empató · Rojo: perdió · Gris: pendiente.</p></div>', unsafe_allow_html=True)
         st.info("La elección Survivor se envía junto con los pronósticos.")
-        render_pro_table(survivor_status(), "Tabla Survivor")
+        st.caption("Las elecciones de los demás se desbloquean cuando los 18 participantes hayan enviado la jornada. Tu propia elección siempre permanece visible para ti.")
+        render_pro_table(survivor_status(viewer_user_id=user["id"], is_admin=False), "Tabla Survivor")
     elif section == "Tabla":
         render_rank_table(standings(), "Tabla general de la quiniela")
     elif section == "Duelos":
@@ -1887,7 +1961,7 @@ def admin_view():
         render_pro_table(pd.DataFrame(duels_round(journey)),f"Duelos · Jornada {journey}",rank_col="",team_by_player=False)
     elif section == "Survivor":
         st.markdown('<div class="section-banner"><h3>🛡️ Survivor</h3><p>Verde: ganó · Amarillo: empató · Rojo: perdió · Gris: pendiente.</p></div>', unsafe_allow_html=True)
-        render_pro_table(survivor_status(),"Tabla Survivor")
+        render_pro_table(survivor_status(is_admin=True),"Tabla Survivor")
     elif section == "Campeón":
         render_pro_table(champion_order().drop(columns=["USER_ID"]),"Orden de elección",qualifier_top8=True)
         with conn() as c:
