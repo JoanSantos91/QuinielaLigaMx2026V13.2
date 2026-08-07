@@ -815,14 +815,24 @@ def inject_style():
     .pro-table .col-capturados,.pro-table .col-total{min-width:78px;max-width:95px}
     @media(max-width:640px){.rank-table{min-width:540px}.rank-table .rank-pos{width:44px}.rank-table .rank-number{width:48px}.rank-table td{padding-top:8px;padding-bottom:8px}.rank-table .club-cell{grid-template-columns:38px minmax(0,1fr);gap:7px}.rank-table .club-cell img{width:38px;height:38px;min-width:38px}.rank-table .participant-name{font-size:.94rem}.rank-table .participant-text small{font-size:.64rem}.player-cell{min-width:190px;gap:8px}.mini-logo{width:48px;height:48px;min-width:48px}.pro-table td{padding:8px 7px}.block-container{padding-left:.55rem;padding-right:.55rem}.hero{grid-template-columns:auto 1fr;padding:13px}.hero .league-logo{width:58px;height:46px}.hero .ball{display:none}.hero h1{font-size:1.35rem}.team-name{font-size:.75rem}.profile-card img{width:76px;height:76px}[data-testid="stNumberInput"] input{font-size:1.15rem}.stTabs [data-baseweb="tab"]{font-size:.73rem;padding-left:7px;padding-right:7px}}
 
-    .journey-table{width:100%;min-width:1180px;border-collapse:separate;border-spacing:0;background:#fff;color:#172033;font-size:.82rem}
-    .journey-table th{position:sticky;top:0;background:#101d3d;color:#fff;padding:10px 8px;text-align:center;white-space:nowrap}
-    .journey-table td{padding:9px 8px;border-bottom:1px solid #e5e9f2;text-align:center;white-space:nowrap}
-    .journey-table .journey-player{text-align:left;font-weight:800;min-width:150px}
-    .journey-table .journey-score{font-weight:750}
-    .journey-table .journey-winner{background:#b7f0c2!important;color:#075b22!important;font-weight:900}
-    .journey-table .journey-tie{background:#ffe69a!important;color:#6b4c00!important;font-weight:900}
-    .journey-table .journey-wins{background:#eef3ff;font-weight:900}
+    .journey-table{width:100%;min-width:1180px;border-collapse:separate;border-spacing:0;background:#fff;color:#172033;font-size:.84rem;border-radius:14px;overflow:hidden;box-shadow:0 10px 28px rgba(16,29,61,.10)}
+    .journey-table th{position:sticky;top:0;z-index:2;background:linear-gradient(135deg,#101d3d,#1d356d);color:#fff;padding:12px 9px;text-align:center;white-space:nowrap;border-right:1px solid rgba(255,255,255,.10);font-size:.78rem;letter-spacing:.03em}
+    .journey-table td{padding:11px 9px;border-bottom:1px solid #e5e9f2;text-align:center;white-space:nowrap;color:#172033}
+    .journey-table tbody tr:nth-child(odd) td{background:#ffffff}
+    .journey-table tbody tr:nth-child(even) td{background:#f2f4f7}
+    .journey-table tbody tr:hover td{background:#e8eefb!important}
+    .journey-table .journey-player{text-align:left;font-weight:850;min-width:170px;position:sticky;left:0;z-index:1;box-shadow:4px 0 8px rgba(16,29,61,.05)}
+    .journey-table .journey-score{font-weight:800;min-width:45px}
+    .journey-table .journey-winner{background:#b7f0c2!important;color:#075b22!important;font-weight:950;box-shadow:inset 0 0 0 2px #5cc477}
+    .journey-table .journey-tie{background:#ffe69a!important;color:#6b4c00!important;font-weight:950;box-shadow:inset 0 0 0 2px #e6bd38}
+    .journey-table .journey-wins{background:#e7edff!important;color:#163169!important;font-weight:950}
+    .section-banner{margin:8px 0 16px;padding:16px 18px;border-radius:16px;background:linear-gradient(135deg,#101d3d,#244789);color:#fff;box-shadow:0 10px 25px rgba(16,29,61,.16)}
+    .section-banner h3{margin:0 0 4px;color:#fff;font-size:1.18rem}.section-banner p{margin:0;color:#dbe6ff;font-size:.88rem}
+    .survivor-result{display:inline-flex;align-items:center;justify-content:center;min-width:84px;padding:6px 10px;border-radius:999px;font-weight:900;border:1px solid transparent}
+    .survivor-win{background:#d7f5df;color:#08652a;border-color:#70cd89}
+    .survivor-draw{background:#fff0b8;color:#765500;border-color:#e4c04c}
+    .survivor-loss{background:#ffd7d7;color:#8b1111;border-color:#e97c7c}
+    .survivor-pending{background:#edf1f7;color:#5f6b7a;border-color:#cfd6e1}
     </style>
     """, unsafe_allow_html=True)
 
@@ -1265,17 +1275,37 @@ def survivor_status():
         for u in users
     }
     for row in picks:
-        data[row["user_id"]][f"J{row['number']}"] = TEAM_SHORT.get(row["team"], row["team"])
-        data[row["user_id"]]["ELECCIONES"] += 1
+        team_name = TEAM_SHORT.get(row["team"], row["team"])
         if row["home_score"] is None or row["away_score"] is None:
-            continue
-        gf = row["home_score"] if row["team"] == row["home_team"] else row["away_score"]
-        ga = row["away_score"] if row["team"] == row["home_team"] else row["home_score"]
-        data[row["user_id"]]["VIDAS"] -= 1 if gf < ga else (0.5 if gf == ga else 0)
+            result_class = "survivor-pending"
+            result_icon = "⏳"
+            result_label = "Pendiente"
+        else:
+            gf = row["home_score"] if row["team"] == row["home_team"] else row["away_score"]
+            ga = row["away_score"] if row["team"] == row["home_team"] else row["home_score"]
+            if gf > ga:
+                result_class = "survivor-win"
+                result_icon = "✓"
+                result_label = "Ganó"
+            elif gf == ga:
+                result_class = "survivor-draw"
+                result_icon = "="
+                result_label = "Empató"
+                data[row["user_id"]]["VIDAS"] -= 0.5
+            else:
+                result_class = "survivor-loss"
+                result_icon = "✕"
+                result_label = "Perdió"
+                data[row["user_id"]]["VIDAS"] -= 1
+        data[row["user_id"]][f"J{row['number']}"] = (
+            f'<span class="survivor-result {result_class}" title="{result_label}">'
+            f'{result_icon} {team_name}</span>'
+        )
+        data[row["user_id"]]["ELECCIONES"] += 1
     for item in data.values():
         item["VIDAS"] = max(0.0, item["VIDAS"])
         for j in range(1, 18):
-            item.setdefault(f"J{j}", "—")
+            item.setdefault(f"J{j}", '<span class="survivor-result survivor-pending">—</span>')
     df = pd.DataFrame(data.values()).sort_values(["VIDAS","ELECCIONES","JUGADOR"], ascending=[False,False,True]).reset_index(drop=True)
     df.insert(0, "POS", range(1, len(df)+1))
     return df[["POS","JUGADOR","EQUIPO","VIDAS","ELECCIONES"] + [f"J{i}" for i in range(1,18)]]
@@ -1430,7 +1460,11 @@ def journey_points_matrix():
 
 def render_journey_points_table():
     df, winners, tied = journey_points_matrix()
-    st.markdown("### Puntos por jornada")
+    st.markdown(
+        '<div class="section-banner"><h3>📊 Puntos por jornada</h3>'
+        '<p>Consulta el rendimiento de cada participante jornada por jornada y los ganadores definitivos.</p></div>',
+        unsafe_allow_html=True,
+    )
     st.caption(
         "Verde: ganador definitivo de la jornada. Amarillo: empate pendiente. "
         "Si empatan, se compara la jornada siguiente; si continúan empatados, se revisan las jornadas posteriores "
@@ -1645,6 +1679,7 @@ def player_view(user):
     elif section == "Premios":
         render_prize_table()
     elif section == "Survivor":
+        st.markdown('<div class="section-banner"><h3>🛡️ Survivor</h3><p>Verde: ganó · Amarillo: empató · Rojo: perdió · Gris: pendiente.</p></div>', unsafe_allow_html=True)
         st.info("La elección Survivor se envía junto con los pronósticos.")
         render_pro_table(survivor_status(), "Tabla Survivor")
     elif section == "Tabla":
@@ -1851,6 +1886,7 @@ def admin_view():
         journey=st.selectbox("Jornada de duelos",range(1,18),key="admin_duel_round")
         render_pro_table(pd.DataFrame(duels_round(journey)),f"Duelos · Jornada {journey}",rank_col="",team_by_player=False)
     elif section == "Survivor":
+        st.markdown('<div class="section-banner"><h3>🛡️ Survivor</h3><p>Verde: ganó · Amarillo: empató · Rojo: perdió · Gris: pendiente.</p></div>', unsafe_allow_html=True)
         render_pro_table(survivor_status(),"Tabla Survivor")
     elif section == "Campeón":
         render_pro_table(champion_order().drop(columns=["USER_ID"]),"Orden de elección",qualifier_top8=True)
