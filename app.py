@@ -814,6 +814,15 @@ def inject_style():
     .pro-table .col-estado,.pro-table .col-survivor{min-width:90px;max-width:125px}
     .pro-table .col-capturados,.pro-table .col-total{min-width:78px;max-width:95px}
     @media(max-width:640px){.rank-table{min-width:540px}.rank-table .rank-pos{width:44px}.rank-table .rank-number{width:48px}.rank-table td{padding-top:8px;padding-bottom:8px}.rank-table .club-cell{grid-template-columns:38px minmax(0,1fr);gap:7px}.rank-table .club-cell img{width:38px;height:38px;min-width:38px}.rank-table .participant-name{font-size:.94rem}.rank-table .participant-text small{font-size:.64rem}.player-cell{min-width:190px;gap:8px}.mini-logo{width:48px;height:48px;min-width:48px}.pro-table td{padding:8px 7px}.block-container{padding-left:.55rem;padding-right:.55rem}.hero{grid-template-columns:auto 1fr;padding:13px}.hero .league-logo{width:58px;height:46px}.hero .ball{display:none}.hero h1{font-size:1.35rem}.team-name{font-size:.75rem}.profile-card img{width:76px;height:76px}[data-testid="stNumberInput"] input{font-size:1.15rem}.stTabs [data-baseweb="tab"]{font-size:.73rem;padding-left:7px;padding-right:7px}}
+
+    .journey-table{width:100%;min-width:1180px;border-collapse:separate;border-spacing:0;background:#fff;color:#172033;font-size:.82rem}
+    .journey-table th{position:sticky;top:0;background:#101d3d;color:#fff;padding:10px 8px;text-align:center;white-space:nowrap}
+    .journey-table td{padding:9px 8px;border-bottom:1px solid #e5e9f2;text-align:center;white-space:nowrap}
+    .journey-table .journey-player{text-align:left;font-weight:800;min-width:150px}
+    .journey-table .journey-score{font-weight:750}
+    .journey-table .journey-winner{background:#b7f0c2!important;color:#075b22!important;font-weight:900}
+    .journey-table .journey-tie{background:#ffe69a!important;color:#6b4c00!important;font-weight:900}
+    .journey-table .journey-wins{background:#eef3ff;font-weight:900}
     </style>
     """, unsafe_allow_html=True)
 
@@ -829,7 +838,7 @@ def brand():
     ball = _data_uri(ASSETS / "liga_mx_balon.png")
     st.markdown(
         f'<div class="hero"><img class="league-logo" src="{league}" alt="Liga MX">'
-        f'<div><h1>{APP_NAME}</h1><p>Apertura 2026 · La quiniela oficial del grupo</p><span class="tag">Quiniela · Survivor · Duelos</span></div>'
+        f'<div><h1>{APP_NAME}</h1><p>Apertura 2026 · La quiniela oficial del grupo</p><span class="tag">Quiniela · Survivor · Duelos · Premios</span></div>'
         f'<img class="ball" src="{ball}" alt="Balón Liga MX"></div>', unsafe_allow_html=True)
 
 
@@ -1246,19 +1255,30 @@ def survivor_lives(user_id, round_number=None):
 @st.cache_data(ttl=20, show_spinner=False)
 def survivor_status():
     with conn() as c:
-        users=c.execute("SELECT id,name,team FROM users WHERE is_admin=0").fetchall()
-        picks=c.execute("""SELECT sp.user_id,sp.team,m.home_team,m.away_team,m.home_score,m.away_score
+        users = c.execute("SELECT id,name,team FROM users WHERE is_admin=0").fetchall()
+        picks = c.execute("""SELECT sp.user_id,sp.team,r.number,m.home_team,m.away_team,m.home_score,m.away_score
                            FROM survivor_picks sp JOIN rounds r ON r.id=sp.round_id
-                           LEFT JOIN matches m ON m.round_id=r.id AND (m.home_team=sp.team OR m.away_team=sp.team)""").fetchall()
-    data={u["id"]:{"JUGADOR":u["name"],"EQUIPO":TEAM_SHORT.get(u["team"],u["team"]),"VIDAS":3.0,"ELECCIONES":0} for u in users}
+                           LEFT JOIN matches m ON m.round_id=r.id AND (m.home_team=sp.team OR m.away_team=sp.team)
+                           ORDER BY r.number""").fetchall()
+    data = {
+        u["id"]: {"JUGADOR":u["name"], "EQUIPO":TEAM_SHORT.get(u["team"],u["team"]), "VIDAS":3.0, "ELECCIONES":0}
+        for u in users
+    }
     for row in picks:
-        data[row["user_id"]]["ELECCIONES"]+=1
-        if row["home_score"] is None: continue
-        gf=row["home_score"] if row["team"]==row["home_team"] else row["away_score"]
-        ga=row["away_score"] if row["team"]==row["home_team"] else row["home_score"]
-        data[row["user_id"]]["VIDAS"]-=1 if gf<ga else (.5 if gf==ga else 0)
-    df=pd.DataFrame(data.values()).sort_values(["VIDAS","ELECCIONES","JUGADOR"],ascending=[False,False,True]).reset_index(drop=True)
-    df.insert(0,"POS",range(1,len(df)+1)); return df
+        data[row["user_id"]][f"J{row['number']}"] = TEAM_SHORT.get(row["team"], row["team"])
+        data[row["user_id"]]["ELECCIONES"] += 1
+        if row["home_score"] is None or row["away_score"] is None:
+            continue
+        gf = row["home_score"] if row["team"] == row["home_team"] else row["away_score"]
+        ga = row["away_score"] if row["team"] == row["home_team"] else row["home_score"]
+        data[row["user_id"]]["VIDAS"] -= 1 if gf < ga else (0.5 if gf == ga else 0)
+    for item in data.values():
+        item["VIDAS"] = max(0.0, item["VIDAS"])
+        for j in range(1, 18):
+            item.setdefault(f"J{j}", "—")
+    df = pd.DataFrame(data.values()).sort_values(["VIDAS","ELECCIONES","JUGADOR"], ascending=[False,False,True]).reset_index(drop=True)
+    df.insert(0, "POS", range(1, len(df)+1))
+    return df[["POS","JUGADOR","EQUIPO","VIDAS","ELECCIONES"] + [f"J{i}" for i in range(1,18)]]
 
 
 def survivor_form_selection(user, round_row, locked, key_prefix="combined"):
@@ -1347,13 +1367,194 @@ def champion_view(user=None, admin=False):
         st.rerun()
 
 
+
+@st.cache_data(ttl=20, show_spinner=False)
+def journey_points_matrix():
+    """Puntos de cada participante por jornada y ganadores aplicando el desempate solicitado."""
+    base = standings().copy()
+    if base.empty:
+        return pd.DataFrame(), {}, {}
+
+    journey_cols = [f"J{i}" for i in range(1, 18)]
+    for col in journey_cols:
+        if col not in base.columns:
+            base[col] = 0
+        base[col] = pd.to_numeric(base[col], errors="coerce").fillna(0).astype(int)
+
+    complete = {j: round_complete(j) for j in range(1, 18)}
+    winners = {}
+    tied = {}
+
+    for j in range(1, 18):
+        if not complete[j]:
+            continue
+        col = f"J{j}"
+        best = int(base[col].max())
+        contenders = base.loc[base[col] == best, "JUGADOR"].tolist()
+        if len(contenders) == 1:
+            winners[j] = contenders[0]
+            tied[j] = []
+            continue
+
+        tied[j] = contenders
+
+        # Desempate progresivo:
+        # - J1 a J16: se revisa J siguiente, luego la posterior y así sucesivamente.
+        # - J17: al no existir una jornada siguiente, se revisa J16, luego J15, etc.
+        tie_order = list(range(j + 1, 18)) if j < 17 else list(range(16, 0, -1))
+        remaining = list(contenders)
+
+        for tie_journey in tie_order:
+            # No se puede resolver todavía con una jornada que no ha concluido.
+            if not complete.get(tie_journey, False):
+                break
+
+            tie_col = f"J{tie_journey}"
+            contender_rows = base[base["JUGADOR"].isin(remaining)]
+            tie_best = int(contender_rows[tie_col].max())
+            remaining = contender_rows.loc[
+                contender_rows[tie_col] == tie_best, "JUGADOR"
+            ].tolist()
+
+            if len(remaining) == 1:
+                break
+
+        winners[j] = remaining[0] if len(remaining) == 1 else None
+
+    display = base[["JUGADOR", "EQUIPO"] + journey_cols].copy()
+    display["JORNADAS GANADAS"] = display["JUGADOR"].map(
+        lambda name: sum(1 for winner in winners.values() if winner == name)
+    )
+    return display, winners, tied
+
+
+def render_journey_points_table():
+    df, winners, tied = journey_points_matrix()
+    st.markdown("### Puntos por jornada")
+    st.caption(
+        "Verde: ganador definitivo de la jornada. Amarillo: empate pendiente. "
+        "Si empatan, se compara la jornada siguiente; si continúan empatados, se revisan las jornadas posteriores "
+        "una por una. Para J17 se revisa J16 y, si hace falta, las anteriores."
+    )
+    if df.empty:
+        st.info("Todavía no hay información para mostrar.")
+        return
+
+    headers = ["PARTICIPANTE", "EQUIPO"] + [f"J{i}" for i in range(1, 18)] + ["GANADAS"]
+    html_rows = []
+    for _, row in df.iterrows():
+        player = row["JUGADOR"]
+        cells = [f'<td class="journey-player">{player}</td>', f'<td>{row["EQUIPO"]}</td>']
+        for j in range(1, 18):
+            css = ""
+            if winners.get(j) == player:
+                css = " journey-winner"
+            elif player in tied.get(j, []):
+                css = " journey-tie"
+            cells.append(f'<td class="journey-score{css}">{int(row[f"J{j}"])}</td>')
+        cells.append(f'<td class="journey-wins">{int(row["JORNADAS GANADAS"])}</td>')
+        html_rows.append("<tr>" + "".join(cells) + "</tr>")
+
+    st.markdown(
+        '<div class="table-scroll"><table class="journey-table"><thead><tr>'
+        + "".join(f"<th>{h}</th>" for h in headers)
+        + "</tr></thead><tbody>"
+        + "".join(html_rows)
+        + "</tbody></table></div>",
+        unsafe_allow_html=True,
+    )
+
+
+@st.cache_data(ttl=20, show_spinner=False)
+def prize_table():
+    """Calcula el saldo de premios acumulado sin guardar valores duplicados en la base."""
+    general = standings().copy()
+    duels = duel_standings().copy()
+    survivor = survivor_status().copy()
+    _, journey_winners, _ = journey_points_matrix()
+
+    rows = []
+    names = [name for _, name, _ in PLAYERS]
+    journey_prizes = {name: 0 for name in names}
+    for winner in journey_winners.values():
+        if winner:
+            journey_prizes[winner] += 100
+
+    regular_prizes = {name: 0 for name in names}
+    duel_prizes = {name: 0 for name in names}
+    survivor_prizes = {name: 0 for name in names}
+    champion_prizes = {name: 0 for name in names}
+
+    regular_complete = round_complete(17)
+    if regular_complete and not general.empty:
+        for position, amount in ((1, 3000), (2, 500), (3, 300)):
+            match = general.loc[general["POS"] == position, "JUGADOR"]
+            if not match.empty:
+                regular_prizes[match.iloc[0]] = amount
+
+    if regular_complete and not duels.empty:
+        for position, amount in ((1, 1000), (2, 300), (3, 200)):
+            match = duels.loc[duels["POS"] == position, "JUGADOR"]
+            if not match.empty:
+                duel_prizes[match.iloc[0]] = amount
+
+    if not survivor.empty and survivor["ELECCIONES"].sum() > 0:
+        alive = survivor[survivor["VIDAS"] > 0]
+        if len(alive) == 1 and len(survivor[survivor["VIDAS"] <= 0]) == len(survivor) - 1:
+            survivor_prizes[alive.iloc[0]["JUGADOR"]] = 1000
+
+    with conn() as c:
+        official_row = c.execute("SELECT value FROM settings WHERE key='official_champion'").fetchone()
+        official_champion = official_row["value"] if official_row and official_row["value"] else ""
+        picks = c.execute(
+            """SELECT u.name, cp.team FROM champion_picks cp
+               JOIN users u ON u.id=cp.user_id"""
+        ).fetchall()
+    if official_champion:
+        for pick in picks:
+            if pick["team"] == official_champion:
+                champion_prizes[pick["name"]] = 1000
+
+    team_by_name = {name: TEAM_SHORT.get(team, team) for _, name, team in PLAYERS}
+    for name in names:
+        entry = -500
+        total = entry + journey_prizes[name] + survivor_prizes[name] + regular_prizes[name] + duel_prizes[name] + champion_prizes[name]
+        rows.append({
+            "JUGADOR": name,
+            "EQUIPO": team_by_name[name],
+            "ENTRADA": entry,
+            "JORNADAS": journey_prizes[name],
+            "SURVIVOR": survivor_prizes[name],
+            "FASE REGULAR": regular_prizes[name],
+            "DUELOS": duel_prizes[name],
+            "CAMPEÓN": champion_prizes[name],
+            "TOTAL": total,
+        })
+    return pd.DataFrame(rows).sort_values(["TOTAL", "JUGADOR"], ascending=[False, True]).reset_index(drop=True)
+
+
+def render_prize_table():
+    st.markdown("### Premios y saldo acumulado")
+    st.caption("Todos comienzan con -$500 por la inscripción. Los premios se agregan automáticamente cuando quedan definidos.")
+    df = prize_table()
+    if df.empty:
+        st.info("Todavía no hay información para mostrar.")
+        return
+    money_cols = ["ENTRADA", "JORNADAS", "SURVIVOR", "FASE REGULAR", "DUELOS", "CAMPEÓN", "TOTAL"]
+    shown = df.copy()
+    for col in money_cols:
+        shown[col] = shown[col].map(lambda value: f"${int(value):,}")
+    render_pro_table(shown, "Tabla de premios", rank_col="", team_by_player=True)
+
+
+
 def player_view(user):
     logo_data=_data_uri(team_logo(user["team"]))
     st.markdown(f'<div class="profile-card"><img src="{logo_data}" alt="{user["team"]}"><div><div class="name">{user["name"]}</div><div class="sub">Equipo de duelos: {TEAM_SHORT.get(user["team"],user["team"])}</div></div></div>',unsafe_allow_html=True)
 
     section = st.radio(
         "Sección",
-        ["Pronósticos","Grupo","Survivor","Tabla","Duelos","Campeón"],
+        ["Pronósticos","Grupo","Puntos","Premios","Survivor","Tabla","Duelos","Campeón"],
         horizontal=True,
         key="player_section",
         label_visibility="collapsed",
@@ -1439,6 +1640,10 @@ def player_view(user):
         rounds = cached_fetchall("SELECT * FROM rounds ORDER BY number")
         choices={f"Jornada {r['number']}":r for r in rounds}; round_row=choices[st.selectbox("Pronósticos del grupo",list(choices),key="group_round")]
         public_predictions(round_row["id"])
+    elif section == "Puntos":
+        render_journey_points_table()
+    elif section == "Premios":
+        render_prize_table()
     elif section == "Survivor":
         st.info("La elección Survivor se envía junto con los pronósticos.")
         render_pro_table(survivor_status(), "Tabla Survivor")
@@ -1455,7 +1660,7 @@ def player_view(user):
 def admin_view():
     section = st.radio(
         "Panel",
-        ["Resultados","Captura manual","Jornadas","Entregas","Participantes","Tabla","Duelos","Survivor","Campeón","Respaldos"],
+        ["Resultados","Captura manual","Jornadas","Entregas","Participantes","Puntos","Premios","Tabla","Duelos","Survivor","Campeón","Respaldos"],
         horizontal=True,
         key="admin_section",
         label_visibility="collapsed",
@@ -1635,6 +1840,10 @@ def admin_view():
         st.warning("Comparte cada PIN de forma privada.")
         render_pro_table(accesses,"Accesos privados",rank_col="",team_by_player=True)
         st.download_button("Descargar accesos",accesses.to_csv(index=False).encode("utf-8-sig"),"accesos_privados.csv")
+    elif section == "Puntos":
+        render_journey_points_table()
+    elif section == "Premios":
+        render_prize_table()
     elif section == "Tabla":
         render_rank_table(standings(),"Tabla general de la quiniela")
     elif section == "Duelos":
@@ -1648,6 +1857,23 @@ def admin_view():
         with conn() as c:
             current=[x["team"] for x in c.execute("SELECT team FROM champion_eligible")]
             active=c.execute("SELECT value FROM settings WHERE key='champion_draft_active'").fetchone()["value"]=="1"
+        official_row = cached_fetchone("SELECT value FROM settings WHERE key='official_champion'")
+        official_current = official_row["value"] if official_row and official_row["value"] in ALL_TEAMS else None
+        official_options = [None] + ALL_TEAMS
+        official_team = st.selectbox(
+            "Campeón oficial del torneo",
+            official_options,
+            index=official_options.index(official_current) if official_current in official_options else 0,
+            format_func=lambda x: "Pendiente por definir" if x is None else TEAM_SHORT.get(x, x),
+            key="official_champion_selector",
+        )
+        if st.button("Guardar campeón oficial", use_container_width=True):
+            run_write(lambda c, value=official_team or "": c.execute(
+                """INSERT INTO settings(key,value) VALUES('official_champion',?)
+                   ON CONFLICT(key) DO UPDATE SET value=excluded.value""", (value,)
+            ))
+            st.success("Campeón oficial actualizado. La tabla de premios se recalculará automáticamente.")
+            st.cache_data.clear()
         eligible=st.multiselect("Equipos elegibles",ALL_TEAMS,default=current)
         if st.button("Guardar equipos elegibles"):
             def save_eligible(c):
