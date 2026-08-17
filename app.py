@@ -2025,18 +2025,173 @@ def predictions_image_data(round_id):
     return pd.DataFrame(rows), int(round_row["number"])
 
 
+
+def create_predictions_image(round_id):
+    """Genera una imagen vertical y legible de los pronósticos para compartir por WhatsApp."""
+    try:
+        from PIL import Image, ImageDraw
+    except ModuleNotFoundError as exc:
+        raise RuntimeError("Falta Pillow. Agrega 'pillow' a requirements.txt.") from exc
+
+    df, number = predictions_image_data(round_id)
+    if df is None or df.empty:
+        raise ValueError("No hay pronósticos disponibles.")
+
+    participant_col = "PARTICIPANTE"
+    game_cols = [c for c in df.columns if c not in (participant_col, "SURVIVOR")]
+    survivor_col = "SURVIVOR" if "SURVIVOR" in df.columns else None
+
+    # Evita la tabla panorámica gigantesca: 5 partidos arriba y 4 + Survivor abajo.
+    blocks = [game_cols[:5], game_cols[5:]]
+    if survivor_col:
+        blocks[1] = blocks[1] + [survivor_col]
+    blocks = [b for b in blocks if b]
+
+    W, margin = 1900, 54
+    title_h, block_title_h, header_h, row_h, block_gap = 190, 52, 118, 78, 56
+    participant_w = 390
+    available = W - margin * 2 - participant_w
+    total_h = title_h + margin + sum(
+        block_title_h + header_h + row_h * len(df) for _ in blocks
+    ) + block_gap * max(0, len(blocks) - 1)
+
+    img = Image.new("RGB", (W, total_h), "#ffffff")
+    draw = ImageDraw.Draw(img)
+
+    navy, navy2, blue = "#071a35", "#0d2b52", "#1768ad"
+    pale_blue, header_fill, stripe = "#eaf3fb", "#edf3f8", "#f6f8fb"
+    border, muted = "#ccd7e3", "#5f7084"
+    survivor_fill, survivor_alt, survivor_text = "#e9f6ec", "#e3f1e7", "#176b31"
+
+    f_title = _leaderboard_font(64, True)
+    f_sub = _leaderboard_font(28, False)
+    f_block = _leaderboard_font(28, True)
+    f_head = _leaderboard_font(25, True)
+    f_match = _leaderboard_font(21, True)
+    f_name = _leaderboard_font(30, True)
+    f_score = _leaderboard_font(32, True)
+    f_survivor = _leaderboard_font(27, True)
+    f_footer = _leaderboard_font(20, False)
+
+    title = f"PRONÓSTICOS · JORNADA {number}"
+    bb = draw.textbbox((0, 0), title, font=f_title)
+    draw.text(((W-(bb[2]-bb[0]))/2, 34), title, font=f_title, fill=navy)
+
+    subtitle = "Quiniela Liga MX · Marcadores + Survivor"
+    bb = draw.textbbox((0, 0), subtitle, font=f_sub)
+    draw.text(((W-(bb[2]-bb[0]))/2, 112), subtitle, font=f_sub, fill=muted)
+    draw.rounded_rectangle((W/2-150, 158, W/2+150, 166), radius=4, fill=blue)
+
+    y = title_h
+    for bidx, cols in enumerate(blocks):
+        game_only = [c for c in cols if c != survivor_col]
+        if game_only:
+            first_num = game_cols.index(game_only[0]) + 1
+            last_num = game_cols.index(game_only[-1]) + 1
+            block_label = f"PARTIDOS {first_num}–{last_num}"
+        else:
+            block_label = "SURVIVOR"
+
+        draw.text((margin, y+6), block_label, font=f_block, fill=navy2)
+        y += block_title_h
+
+        other_w = available // max(1, len(cols))
+        widths = [participant_w] + [other_w] * len(cols)
+        widths[-1] += (W - margin*2) - sum(widths)
+        xs = [margin]
+        for w in widths:
+            xs.append(xs[-1] + w)
+
+        bottom = y + header_h + row_h * len(df)
+        draw.rounded_rectangle((margin, y, W-margin, bottom), radius=18,
+                               fill="#ffffff", outline=border, width=2)
+        draw.rectangle((margin, y, W-margin, y+header_h), fill=header_fill)
+
+        draw.text((margin+22, y+43), "PARTICIPANTE", font=f_head, fill=navy)
+
+        for i, col in enumerate(cols, 1):
+            left, right = xs[i], xs[i+1]
+            draw.line((left, y, left, bottom), fill=border, width=2)
+
+            if col == survivor_col:
+                draw.rectangle((left, y, right, y+header_h), fill=survivor_fill)
+                label = "SURVIVOR"
+                hb = draw.textbbox((0,0), label, font=f_head)
+                draw.text((left+(right-left-(hb[2]-hb[0]))/2, y+43),
+                          label, font=f_head, fill=survivor_text)
+                continue
+
+            parts = str(col).split("\n", 1)
+            pnum = parts[0].strip()
+            matchup = parts[1].strip() if len(parts) > 1 else ""
+            hb = draw.textbbox((0,0), pnum, font=f_head)
+            draw.text((left+(right-left-(hb[2]-hb[0]))/2, y+18),
+                      pnum, font=f_head, fill=blue)
+            matchup = _fit_text(draw, matchup, f_match, right-left-18)
+            mb = draw.textbbox((0,0), matchup, font=f_match)
+            draw.text((left+(right-left-(mb[2]-mb[0]))/2, y+66),
+                      matchup, font=f_match, fill=navy)
+
+        for ridx, (_, row) in enumerate(df.iterrows()):
+            ry = y + header_h + ridx * row_h
+            draw.rectangle((margin, ry, W-margin, ry+row_h),
+                           fill="#ffffff" if ridx % 2 == 0 else stripe)
+
+            pname = _plain_cell(row[participant_col])
+            if pname == "Joan Santos":
+                draw.rectangle((margin, ry, margin+participant_w, ry+row_h), fill=pale_blue)
+
+            draw.line((margin, ry+row_h, W-margin, ry+row_h), fill=border, width=1)
+
+            pname = _fit_text(draw, pname, f_name, participant_w-38)
+            nb = draw.textbbox((0,0), pname, font=f_name)
+            draw.text((margin+20, ry+(row_h-(nb[3]-nb[1]))/2-3),
+                      pname, font=f_name, fill=navy)
+
+            for i, col in enumerate(cols, 1):
+                left, right = xs[i], xs[i+1]
+                value = _plain_cell(row[col])
+                if col == survivor_col:
+                    draw.rectangle((left, ry, right, ry+row_h),
+                                   fill=survivor_fill if ridx % 2 == 0 else survivor_alt)
+                    font, color = f_survivor, survivor_text
+                else:
+                    font, color = f_score, navy
+
+                value = _fit_text(draw, value, font, right-left-18)
+                vb = draw.textbbox((0,0), value, font=font)
+                draw.text((left+(right-left-(vb[2]-vb[0]))/2,
+                           ry+(row_h-(vb[3]-vb[1]))/2-3),
+                          value, font=font, fill=color)
+
+        y = bottom
+        if bidx < len(blocks)-1:
+            y += block_gap
+
+    footer = "Formato optimizado para compartir y ampliar en WhatsApp"
+    fb = draw.textbbox((0,0), footer, font=f_footer)
+    draw.text(((W-(fb[2]-fb[0]))/2, total_h-36), footer, font=f_footer, fill=muted)
+
+    out = io.BytesIO()
+    img.save(out, format="PNG", optimize=True, dpi=(220,220))
+    return out.getvalue(), number
+
+
 def admin_predictions_download_button(round_id):
     try:
-        df, number = predictions_image_data(round_id)
-        data = _draw_table_image(f"Pronósticos · Jornada {number}", df,
-                                 subtitle="Incluye todos los marcadores y la elección Survivor",
-                                 participant_col="PARTICIPANTE", landscape=True, top_colors=False, max_col_width=180)
-        st.download_button("📥 Descargar pronósticos como imagen", data,
-                           f"pronosticos_jornada_{number}.png", "image/png",
-                           use_container_width=True, key=f"download_predictions_{round_id}")
+        data, number = create_predictions_image(round_id)
+        st.download_button(
+            f"📸 Descargar Pronósticos · Jornada {number}",
+            data=data,
+            file_name=f"pronosticos_jornada_{number}.png",
+            mime="image/png",
+            type="primary",
+            use_container_width=True,
+            key=f"download_predictions_{round_id}",
+        )
+        st.caption("Formato optimizado para WhatsApp: dos bloques, letras grandes y Survivor destacado.")
     except Exception as exc:
         st.error(f"No se pudo generar la imagen de pronósticos: {exc}")
-
 
 def admin_points_download_button():
     try:
