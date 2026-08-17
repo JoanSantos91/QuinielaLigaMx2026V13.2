@@ -2065,7 +2065,10 @@ def _paste_logo(canvas, path: Path, box, *, max_ratio=0.90):
 
 
 def create_predictions_poster(round_id):
-    """Genera una sola imagen vertical tipo cartel deportivo, legible en WhatsApp."""
+    """
+    Genera una imagen compacta y muy legible para WhatsApp.
+    Prioriza el tamaño de nombres y marcadores y elimina casi todo el espacio desperdiciado.
+    """
     try:
         from PIL import Image, ImageDraw
     except ModuleNotFoundError as exc:
@@ -2084,165 +2087,269 @@ def create_predictions_poster(round_id):
     if len(matches) != len(game_cols):
         raise ValueError("La cantidad de partidos no coincide con las columnas de pronósticos.")
 
-    W = 2048
-    margin = 30
-    participant_w = 330
-    survivor_w = 270
+    # =========================================================
+    # FORMATO COMPACTO
+    # =========================================================
+    # Menos ancho total + casi cero márgenes = letras mucho más grandes
+    # al visualizar la imagen completa en WhatsApp.
+    W = 1600
+    margin = 8
+    participant_w = 275
+    survivor_w = 215
     game_w = (W - margin * 2 - participant_w - survivor_w) // len(matches)
     survivor_w += W - margin * 2 - participant_w - survivor_w - game_w * len(matches)
 
-    top_h = 250
-    games_header_h = 330
-    row_h = 102
-    footer_h = 74
+    top_h = 175
+    games_header_h = 255
+    row_h = 76
+    footer_h = 54
     H = top_h + games_header_h + row_h * len(df) + footer_h
 
     img = Image.new("RGB", (W, H), "#ffffff")
     draw = ImageDraw.Draw(img)
 
     navy = "#06172f"
+    navy2 = "#0a2447"
     white = "#ffffff"
-    red = "#e02727"
-    yellow = "#ffd400"
+    red = "#e12929"
+    yellow = "#ffd500"
     green_bg = "#e9f7e9"
     green_alt = "#dff1e1"
-    green_text = "#1c6d2d"
-    grid = "#9eabb9"
-    light = "#f5f7fa"
+    green_text = "#17672a"
+    grid = "#8795a5"
+    row_alt = "#f1f4f7"
     black = "#101820"
+    joan_bg = "#fff3bd"
 
-    f_title = _leaderboard_font(78, True)
-    f_sub = _leaderboard_font(38, True)
-    f_date = _leaderboard_font(35, True)
-    f_section = _leaderboard_font(37, True)
-    f_pnum = _leaderboard_font(38, True)
-    f_team = _leaderboard_font(31, True)
-    f_vs = _leaderboard_font(25, True)
-    f_name = _leaderboard_font(35, True)
-    f_num = _leaderboard_font(47, True)
-    f_survivor = _leaderboard_font(32, True)
-    f_footer = _leaderboard_font(27, True)
+    # Tipografías considerablemente más grandes.
+    f_title = _leaderboard_font(66, True)
+    f_sub = _leaderboard_font(29, True)
+    f_section = _leaderboard_font(29, True)
+    f_pnum = _leaderboard_font(29, True)
+    f_team = _leaderboard_font(23, True)
+    f_vs = _leaderboard_font(19, True)
+    f_name = _leaderboard_font(27, True)
+    f_rownum = _leaderboard_font(30, True)
+    f_score = _leaderboard_font(37, True)
+    f_survivor = _leaderboard_font(25, True)
+    f_footer = _leaderboard_font(21, True)
 
-    # Encabezado
+    # =========================================================
+    # ENCABEZADO: compacto y sin espacio muerto
+    # =========================================================
     draw.rectangle((0, 0, W, top_h), fill=navy)
-    _paste_logo(img, ASSETS / "liga_mx_logo.png", (35, 25, 210, 190), max_ratio=0.92)
+
+    # Liga MX en la esquina izquierda.
+    _paste_logo(
+        img,
+        ASSETS / "liga_mx_logo.png",
+        (18, 14, 142, 136),
+        max_ratio=0.96,
+    )
 
     title = f"PRONÓSTICOS · JORNADA {number}"
     tb = draw.textbbox((0, 0), title, font=f_title)
-    draw.text(((W-(tb[2]-tb[0]))//2, 32), title, font=f_title, fill=white)
+    title_w = tb[2] - tb[0]
+    # Centrado real, dejando sitio para el logo pero sin desplazar demasiado.
+    draw.text(((W-title_w)//2, 18), title, font=f_title, fill=white)
 
     generated = now_local()
-    months = {1:"enero",2:"febrero",3:"marzo",4:"abril",5:"mayo",6:"junio",
-              7:"julio",8:"agosto",9:"septiembre",10:"octubre",11:"noviembre",12:"diciembre"}
-    prefix = "Liga MX · Quiniela · "
-    date_part = f"{generated.day} de {months[generated.month]} {generated.year}"
-    pb = draw.textbbox((0,0), prefix, font=f_sub)
-    db = draw.textbbox((0,0), date_part, font=f_date)
-    total_w = (pb[2]-pb[0]) + (db[2]-db[0])
-    x = (W-total_w)//2
-    draw.text((x,145), prefix, font=f_sub, fill=white)
-    draw.text((x+(pb[2]-pb[0]),148), date_part, font=f_date, fill=yellow)
+    months = {
+        1:"enero",2:"febrero",3:"marzo",4:"abril",5:"mayo",6:"junio",
+        7:"julio",8:"agosto",9:"septiembre",10:"octubre",11:"noviembre",12:"diciembre"
+    }
+    subtitle = f"Liga MX · Quiniela · {generated.day} de {months[generated.month]} {generated.year}"
+    sb = draw.textbbox((0, 0), subtitle, font=f_sub)
+    draw.text(((W-(sb[2]-sb[0]))//2, 100), subtitle, font=f_sub, fill=yellow)
 
-    # Sello Quiniela Joan Santos
-    badge = (W-255, 22, W-35, 214)
-    draw.rounded_rectangle(badge, radius=20, fill="#0a1830", outline=red, width=6)
-    draw.text((W-231, 48), "QUINIELA", font=_leaderboard_font(25, True), fill=white)
-    draw.text((W-235, 83), "JOAN SANTOS", font=_leaderboard_font(29, True), fill=white)
-    draw.ellipse((W-179, 130, W-111, 198), fill=white, outline=black, width=3)
+    # Marca discreta en lugar del gran cuadro vacío anterior.
+    brand = "QUINIELA JOAN SANTOS"
+    brand_font = _leaderboard_font(20, True)
+    bb = draw.textbbox((0,0), brand, font=brand_font)
+    bx = W - (bb[2]-bb[0]) - 22
+    draw.rounded_rectangle((bx-10, 20, W-12, 58), radius=8, outline=red, width=3)
+    draw.text((bx, 29), brand, font=brand_font, fill=white)
 
-    # Tabla
+    # =========================================================
+    # TABLA
+    # =========================================================
     y0 = top_h
     x_part = margin
     x_games = x_part + participant_w
     x_surv = x_games + game_w * len(matches)
 
+    # Participante y Survivor con encabezado sólido.
     draw.rectangle((x_part, y0, x_games, y0+games_header_h), fill=navy)
     draw.rectangle((x_surv, y0, W-margin, y0+games_header_h), fill=navy)
-    draw.text((x_part+24, y0+games_header_h-76), "PARTICIPANTE", font=f_section, fill=white)
 
-    sb = draw.textbbox((0,0), "SURVIVOR", font=f_section)
-    draw.text((x_surv+(survivor_w-(sb[2]-sb[0]))//2, y0+games_header_h-76),
-              "SURVIVOR", font=f_section, fill=yellow)
+    p_label = "PARTICIPANTE"
+    pb = draw.textbbox((0,0), p_label, font=f_section)
+    draw.text(
+        (x_part + (participant_w-(pb[2]-pb[0]))//2,
+         y0 + games_header_h - 50),
+        p_label, font=f_section, fill=white
+    )
 
+    s_label = "SURVIVOR"
+    sb = draw.textbbox((0,0), s_label, font=f_section)
+    draw.text(
+        (x_surv + (survivor_w-(sb[2]-sb[0]))//2,
+         y0 + games_header_h - 50),
+        s_label, font=f_section, fill=yellow
+    )
+
+    # Partidos.
     for i, match in enumerate(matches):
-        left = x_games + i*game_w
+        left = x_games + i * game_w
         right = left + game_w
+
         draw.rectangle((left, y0, right, y0+games_header_h), fill=white)
         draw.line((left, y0, left, H-footer_h), fill=grid, width=2)
 
         ptxt = f"P{i+1}"
         bb = draw.textbbox((0,0), ptxt, font=f_pnum)
-        draw.text((left+(game_w-(bb[2]-bb[0]))//2, y0+16), ptxt, font=f_pnum, fill=red)
+        draw.text(
+            (left + (game_w-(bb[2]-bb[0]))//2, y0+8),
+            ptxt, font=f_pnum, fill=red
+        )
 
         home = match["home_team"]
         away = match["away_team"]
 
-        _paste_logo(img, team_logo(home), (left+20, y0+62, right-20, y0+142), max_ratio=0.90)
+        # Escudos más grandes proporcionalmente al encabezado.
+        _paste_logo(img, team_logo(home),
+                    (left+12, y0+42, right-12, y0+102), max_ratio=0.96)
+
         htxt = _prediction_team_abbr(home)
         hb = draw.textbbox((0,0), htxt, font=f_team)
-        draw.text((left+(game_w-(hb[2]-hb[0]))//2, y0+148), htxt, font=f_team, fill=black)
+        draw.text(
+            (left+(game_w-(hb[2]-hb[0]))//2, y0+105),
+            htxt, font=f_team, fill=black
+        )
 
         vb = draw.textbbox((0,0), "VS", font=f_vs)
-        draw.text((left+(game_w-(vb[2]-vb[0]))//2, y0+190), "VS", font=f_vs, fill=black)
+        draw.text(
+            (left+(game_w-(vb[2]-vb[0]))//2, y0+139),
+            "VS", font=f_vs, fill=black
+        )
 
-        _paste_logo(img, team_logo(away), (left+20, y0+215, right-20, y0+285), max_ratio=0.90)
+        _paste_logo(img, team_logo(away),
+                    (left+12, y0+164, right-12, y0+218), max_ratio=0.96)
+
         atxt = _prediction_team_abbr(away)
         ab = draw.textbbox((0,0), atxt, font=f_team)
-        draw.text((left+(game_w-(ab[2]-ab[0]))//2, y0+288), atxt, font=f_team, fill=black)
+        draw.text(
+            (left+(game_w-(ab[2]-ab[0]))//2, y0+220),
+            atxt, font=f_team, fill=black
+        )
 
     draw.line((x_surv, y0, x_surv, H-footer_h), fill=grid, width=2)
 
+    # =========================================================
+    # FILAS: nombres y marcadores protagonistas
+    # =========================================================
     for ridx, (_, row) in enumerate(df.iterrows()):
-        y = y0 + games_header_h + ridx*row_h
-        fill = white if ridx % 2 == 0 else light
-        draw.rectangle((x_part, y, x_surv, y+row_h), fill=fill)
-        draw.rectangle((x_surv, y, W-margin, y+row_h),
-                       fill=green_bg if ridx % 2 == 0 else green_alt)
+        y = y0 + games_header_h + ridx * row_h
 
+        base_fill = white if ridx % 2 == 0 else row_alt
+        if _plain_cell(row["PARTICIPANTE"]) == "Joan Santos":
+            base_fill = joan_bg
+
+        draw.rectangle((x_games, y, x_surv, y+row_h), fill=base_fill)
+        draw.rectangle(
+            (x_surv, y, W-margin, y+row_h),
+            fill=green_bg if ridx % 2 == 0 else green_alt
+        )
+
+        # Nombre siempre en navy para máximo contraste.
         draw.rectangle((x_part, y, x_games, y+row_h), fill=navy)
-        draw.text((x_part+14, y+24), str(ridx+1), font=f_num, fill=white)
 
-        name = _fit_text(draw, _plain_cell(row["PARTICIPANTE"]), f_name, participant_w-90)
-        draw.text((x_part+72, y+31), name, font=f_name, fill=white)
+        num = str(ridx+1)
+        nb = draw.textbbox((0,0), num, font=f_rownum)
+        draw.text(
+            (x_part+10, y+(row_h-(nb[3]-nb[1]))//2-2),
+            num, font=f_rownum, fill=white
+        )
 
+        pname = _fit_text(
+            draw,
+            _plain_cell(row["PARTICIPANTE"]),
+            f_name,
+            participant_w-62
+        )
+        name_box = draw.textbbox((0,0), pname, font=f_name)
+        draw.text(
+            (x_part+50, y+(row_h-(name_box[3]-name_box[1]))//2-2),
+            pname, font=f_name, fill=white
+        )
+
+        # Marcadores muy grandes.
         for cidx, col in enumerate(game_cols):
-            left = x_games + cidx*game_w
+            left = x_games + cidx * game_w
             value = _plain_cell(row[col])
-            bb = draw.textbbox((0,0), value, font=f_num)
-            draw.text((left+(game_w-(bb[2]-bb[0]))//2,
-                       y+(row_h-(bb[3]-bb[1]))//2-3),
-                      value, font=f_num, fill=black)
+            if value == "—":
+                value = "—"
+            vb = draw.textbbox((0,0), value, font=f_score)
+            draw.text(
+                (left+(game_w-(vb[2]-vb[0]))//2,
+                 y+(row_h-(vb[3]-vb[1]))//2-3),
+                value, font=f_score, fill=black
+            )
 
+        # Survivor con escudo visible.
         survivor_value = _plain_cell(row.get("SURVIVOR", "—"))
         if survivor_value != "—":
             full_team = _resolve_short_team(survivor_value)
             if full_team:
-                _paste_logo(img, team_logo(full_team),
-                            (x_surv+12, y+13, x_surv+76, y+89), max_ratio=0.94)
+                _paste_logo(
+                    img,
+                    team_logo(full_team),
+                    (x_surv+8, y+8, x_surv+60, y+68),
+                    max_ratio=0.96,
+                )
             surv_name = TEAM_SHORT.get(full_team, survivor_value) if full_team else survivor_value
-            surv_name = _fit_text(draw, str(surv_name).upper(), f_survivor, survivor_w-94)
-            draw.text((x_surv+88, y+35), surv_name, font=f_survivor, fill=green_text)
+            surv_name = _fit_text(
+                draw, str(surv_name).upper(), f_survivor, survivor_w-70
+            )
+            sbx = draw.textbbox((0,0), surv_name, font=f_survivor)
+            draw.text(
+                (x_surv+66, y+(row_h-(sbx[3]-sbx[1]))//2-2),
+                surv_name, font=f_survivor, fill=green_text
+            )
         else:
-            bb = draw.textbbox((0,0), "—", font=f_num)
-            draw.text((x_surv+(survivor_w-(bb[2]-bb[0]))//2, y+24),
-                      "—", font=f_num, fill=black)
+            db = draw.textbbox((0,0), "—", font=f_score)
+            draw.text(
+                (x_surv+(survivor_w-(db[2]-db[0]))//2,
+                 y+(row_h-(db[3]-db[1]))//2-3),
+                "—", font=f_score, fill=black
+            )
 
+        # Separadores más marcados.
         draw.line((x_part, y+row_h, W-margin, y+row_h), fill=grid, width=2)
 
-    draw.rectangle((x_part, y0, W-margin, y0+games_header_h+row_h*len(df)),
-                   outline=navy, width=4)
+    # Marco exterior.
+    draw.rectangle(
+        (x_part, y0, W-margin, y0+games_header_h+row_h*len(df)),
+        outline=navy, width=4
+    )
 
+    # =========================================================
+    # PIE MUY COMPACTO
+    # =========================================================
     fy = H-footer_h
     draw.rectangle((0, fy, W, H), fill=navy)
-    draw.text((120, fy+21), "★  ¡MUCHA SUERTE A TODOS!", font=f_footer, fill=white)
-    center = "QUINIELA JOAN SANTOS"
-    cb = draw.textbbox((0,0), center, font=f_footer)
-    draw.text(((W-(cb[2]-cb[0]))//2, fy+21), center, font=f_footer, fill=white)
+
+    left_footer = "★  ¡MUCHA SUERTE A TODOS!"
+    draw.text((24, fy+14), left_footer, font=f_footer, fill=yellow)
+
+    right_footer = "QUINIELA JOAN SANTOS"
+    rb = draw.textbbox((0,0), right_footer, font=f_footer)
+    draw.text((W-(rb[2]-rb[0])-28, fy+14), right_footer, font=f_footer, fill=white)
 
     out = io.BytesIO()
-    img.save(out, format="PNG", dpi=(220,220))
+    # PNG de alta calidad; sin compresión agresiva para conservar nitidez.
+    img.save(out, format="PNG", compress_level=2, dpi=(220,220))
     return out.getvalue(), number
-
 
 def admin_predictions_download_button(round_id):
     try:
