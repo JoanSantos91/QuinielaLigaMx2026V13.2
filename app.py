@@ -2437,6 +2437,358 @@ def admin_standings_download_button(df: pd.DataFrame):
     )
     st.caption("Imagen vertical en alta calidad, lista para enviarse al grupo de WhatsApp.")
 
+
+def player_submission_details(user_id, round_id):
+    """
+    Lee DIRECTAMENTE de Supabase lo que realmente quedó guardado para un jugador.
+    No usa los valores del formulario como comprobante.
+    """
+    with conn() as c:
+        round_row = c.execute(
+            "SELECT id,number FROM rounds WHERE id=?", (round_id,)
+        ).fetchone()
+        if not round_row:
+            return None
+
+        matches = c.execute(
+            "SELECT id,home_team,away_team,kickoff FROM matches WHERE round_id=? ORDER BY kickoff",
+            (round_id,),
+        ).fetchall()
+
+        saved = c.execute(
+            """SELECT p.match_id,p.home_score,p.away_score,p.submitted_at
+               FROM predictions p
+               JOIN matches m ON m.id=p.match_id
+               WHERE p.user_id=? AND m.round_id=?
+               ORDER BY m.kickoff""",
+            (user_id, round_id),
+        ).fetchall()
+
+        survivor_row = c.execute(
+            "SELECT team,submitted_at FROM survivor_picks WHERE user_id=? AND round_id=?",
+            (user_id, round_id),
+        ).fetchone()
+
+        alive_before = _survivor_lives_before_round(
+            c, user_id, int(round_row["number"])
+        ) > 0
+
+    saved_by_match = {int(r["match_id"]): r for r in saved}
+    rows = []
+    latest_times = []
+
+    for index, match in enumerate(matches, 1):
+        pred = saved_by_match.get(int(match["id"]))
+        if pred and pred.get("submitted_at"):
+            latest_times.append(pred["submitted_at"])
+        rows.append({
+            "number": index,
+            "match_id": int(match["id"]),
+            "home_team": match["home_team"],
+            "away_team": match["away_team"],
+            "home_score": pred["home_score"] if pred else None,
+            "away_score": pred["away_score"] if pred else None,
+            "saved": pred is not None,
+        })
+
+    if survivor_row and survivor_row.get("submitted_at"):
+        latest_times.append(survivor_row["submitted_at"])
+
+    survivor_required = bool(alive_before)
+    survivor_ok = bool(survivor_row) or not survivor_required
+    matches_saved = sum(1 for r in rows if r["saved"])
+    complete = matches_saved == len(matches) and survivor_ok
+
+    latest = max(latest_times, key=lambda x: str(x)) if latest_times else None
+
+    return {
+        "round_id": int(round_id),
+        "round_number": int(round_row["number"]),
+        "matches": rows,
+        "matches_saved": matches_saved,
+        "matches_total": len(matches),
+        "survivor_team": survivor_row["team"] if survivor_row else None,
+        "survivor_required": survivor_required,
+        "survivor_ok": survivor_ok,
+        "complete": complete,
+        "latest_submitted_at": latest,
+    }
+
+
+def _format_submission_time(value):
+    if not value:
+        return "Sin hora registrada"
+    try:
+        dt = normalize_datetime(value)
+        return dt.strftime("%d/%m/%Y · %I:%M %p")
+    except Exception:
+        return str(value)
+
+
+def _mask_confirmation_status(details):
+    if not details:
+        return "No se pudo leer la entrega."
+    if details["complete"]:
+        return (
+            f'✅ {details["matches_saved"]}/{details["matches_total"]} pronósticos '
+            f'confirmados en Supabase'
+        )
+    missing = details["matches_total"] - details["matches_saved"]
+    pieces = [f'⚠️ Faltan {missing} pronóstico(s) por confirmar']
+    if details["survivor_required"] and not details["survivor_ok"]:
+        pieces.append("falta Survivor")
+    return " · ".join(pieces)
+
+
+def create_player_submission_receipt(user, round_id):
+    """
+    Crea un comprobante individual bonito, vertical y fácil de leer.
+    Los datos se vuelven a consultar desde Supabase antes de crear la imagen.
+    """
+    try:
+        from PIL import Image, ImageDraw
+    except ModuleNotFoundError as exc:
+        raise RuntimeError("Falta Pillow. Agrega 'pillow' a requirements.txt.") from exc
+
+    details = player_submission_details(user["id"], round_id)
+    if not details or not details["complete"]:
+        raise ValueError("La entrega todavía no está confirmada completamente en Supabase.")
+
+    matches = details["matches"]
+    W = 1280
+    margin = 42
+    header_h = 250
+    status_h = 120
+    row_h = 132
+    survivor_h = 170
+    footer_h = 125
+    H = header_h + status_h + row_h * len(matches) + survivor_h + footer_h
+
+    img = Image.new("RGB", (W, H), "#f4f7fb")
+    draw = ImageDraw.Draw(img)
+
+    navy = "#06172f"
+    navy2 = "#0b2e59"
+    white = "#ffffff"
+    yellow = "#ffd500"
+    green = "#16833f"
+    green_bg = "#e9f7ee"
+    line = "#d7e0e9"
+    text = "#11243a"
+    muted = "#607287"
+    row_alt = "#f8fafc"
+
+    f_title = _leaderboard_font(56, True)
+    f_sub = _leaderboard_font(26, True)
+    f_name = _leaderboard_font(34, True)
+    f_status = _leaderboard_font(30, True)
+    f_p = _leaderboard_font(28, True)
+    f_team = _leaderboard_font(27, True)
+    f_score = _leaderboard_font(46, True)
+    f_surv_title = _leaderboard_font(28, True)
+    f_surv = _leaderboard_font(36, True)
+    f_small = _leaderboard_font(23, False)
+    f_footer = _leaderboard_font(24, True)
+
+    # Header
+    draw.rectangle((0, 0, W, header_h), fill=navy)
+    _paste_logo(img, ASSETS / "liga_mx_logo.png", (35, 28, 185, 185), max_ratio=0.95)
+
+    title = f'JORNADA {details["round_number"]} · CONFIRMADA'
+    tb = draw.textbbox((0, 0), title, font=f_title)
+    draw.text(((W-(tb[2]-tb[0]))//2, 35), title, font=f_title, fill=white)
+
+    name = str(user["name"]).upper()
+    nb = draw.textbbox((0, 0), name, font=f_name)
+    draw.text(((W-(nb[2]-nb[0]))//2, 112), name, font=f_name, fill=yellow)
+
+    subtitle = "Comprobante de pronósticos guardados"
+    sb = draw.textbbox((0, 0), subtitle, font=f_sub)
+    draw.text(((W-(sb[2]-sb[0]))//2, 170), subtitle, font=f_sub, fill=white)
+
+    # Verification banner
+    sy = header_h
+    draw.rounded_rectangle(
+        (margin, sy+18, W-margin, sy+status_h-15),
+        radius=22, fill=green_bg, outline="#9ed9b4", width=3
+    )
+    verified = f'✅ {details["matches_saved"]}/{details["matches_total"]} GUARDADOS EN SUPABASE'
+    vb = draw.textbbox((0,0), verified, font=f_status)
+    draw.text(((W-(vb[2]-vb[0]))//2, sy+37), verified, font=f_status, fill=green)
+
+    when = _format_submission_time(details["latest_submitted_at"])
+    wb = draw.textbbox((0,0), when, font=f_small)
+    draw.text(((W-(wb[2]-wb[0]))//2, sy+78), when, font=f_small, fill=muted)
+
+    y = header_h + status_h
+
+    # Match rows
+    for i, row in enumerate(matches):
+        fill = white if i % 2 == 0 else row_alt
+        draw.rounded_rectangle(
+            (margin, y+6, W-margin, y+row_h-6),
+            radius=18, fill=fill, outline=line, width=2
+        )
+
+        ptxt = f'P{row["number"]}'
+        draw.text((margin+20, y+45), ptxt, font=f_p, fill=navy2)
+
+        # Local
+        logo_size = 76
+        home_logo_box = (margin+92, y+24, margin+92+logo_size, y+24+logo_size)
+        _paste_logo(img, team_logo(row["home_team"]), home_logo_box, max_ratio=0.95)
+        home_name = TEAM_SHORT.get(row["home_team"], row["home_team"])
+        home_name = _fit_text(draw, home_name, f_team, 250)
+        draw.text((margin+185, y+47), home_name, font=f_team, fill=text)
+
+        # Score
+        score = f'{row["home_score"]}-{row["away_score"]}'
+        scb = draw.textbbox((0,0), score, font=f_score)
+        draw.rounded_rectangle(
+            (W//2-100, y+27, W//2+100, y+row_h-27),
+            radius=16, fill=navy
+        )
+        draw.text(
+            (W//2-(scb[2]-scb[0])//2, y+(row_h-(scb[3]-scb[1]))//2-4),
+            score, font=f_score, fill=white
+        )
+
+        # Visitante
+        away_name = TEAM_SHORT.get(row["away_team"], row["away_team"])
+        away_name = _fit_text(draw, away_name, f_team, 250)
+        ab = draw.textbbox((0,0), away_name, font=f_team)
+        away_logo_box = (W-margin-168, y+24, W-margin-92, y+100)
+        _paste_logo(img, team_logo(row["away_team"]), away_logo_box, max_ratio=0.95)
+        draw.text((W-margin-185-250, y+47), away_name, font=f_team, fill=text)
+
+        y += row_h
+
+    # Survivor
+    draw.rounded_rectangle(
+        (margin, y+18, W-margin, y+survivor_h-18),
+        radius=24, fill=green_bg, outline="#9ed9b4", width=3
+    )
+    draw.text((margin+30, y+43), "🛡 SURVIVOR", font=f_surv_title, fill=green)
+
+    if details["survivor_team"]:
+        team = details["survivor_team"]
+        _paste_logo(img, team_logo(team), (W//2-235, y+42, W//2-125, y+152), max_ratio=0.94)
+        surv_name = TEAM_SHORT.get(team, team).upper()
+        draw.text((W//2-95, y+76), surv_name, font=f_surv, fill=green)
+    else:
+        draw.text((W//2-110, y+76), "ELIMINADO", font=f_surv, fill=muted)
+
+    # Footer
+    fy = H-footer_h
+    draw.rectangle((0, fy, W, H), fill=navy)
+    footer1 = "Esta imagen muestra exactamente lo guardado en la base de datos."
+    fb = draw.textbbox((0,0), footer1, font=f_footer)
+    draw.text(((W-(fb[2]-fb[0]))//2, fy+22), footer1, font=f_footer, fill=white)
+
+    footer2 = "QUINIELA JOAN SANTOS"
+    fb2 = draw.textbbox((0,0), footer2, font=f_small)
+    draw.text(((W-(fb2[2]-fb2[0]))//2, fy+69), footer2, font=f_small, fill=yellow)
+
+    out = io.BytesIO()
+    img.save(out, format="PNG", compress_level=2, dpi=(220,220))
+    return out.getvalue(), details
+
+
+def render_player_submission_confirmation(user, round_row):
+    """
+    Muestra el estado real guardado en Supabase y permite descargar el comprobante.
+    Se ejecuta también al volver a entrar a la jornada, no solo justo después de enviar.
+    """
+    details = player_submission_details(user["id"], round_row["id"])
+    if not details:
+        return
+
+    if details["matches_saved"] == 0 and not details["survivor_team"]:
+        st.info(
+            "Aún no hay una entrega confirmada para esta jornada. "
+            "Llena tus pronósticos y presiona **ENVIAR Y CONFIRMAR QUINIELA**."
+        )
+        return
+
+    if details["complete"]:
+        st.markdown(
+            f"""
+            <div style="
+                margin:18px 0 14px;
+                padding:22px 24px;
+                border-radius:20px;
+                background:linear-gradient(135deg,#eaf8ef,#f8fffb);
+                border:2px solid #9bd5af;
+                box-shadow:0 8px 24px rgba(20,110,60,.08);
+            ">
+              <div style="font-size:1.35rem;font-weight:900;color:#146c37;">
+                ✅ TU QUINIELA ESTÁ CONFIRMADA
+              </div>
+              <div style="font-size:1.05rem;color:#244335;margin-top:7px;">
+                {details["matches_saved"]}/{details["matches_total"]} pronósticos fueron leídos nuevamente desde Supabase.
+              </div>
+              <div style="font-size:.98rem;color:#526b5c;margin-top:5px;">
+                Última actualización: {_format_submission_time(details["latest_submitted_at"])}
+              </div>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+
+        st.markdown("#### 📋 Esto es exactamente lo que quedó guardado")
+        for row in details["matches"]:
+            home = TEAM_SHORT.get(row["home_team"], row["home_team"])
+            away = TEAM_SHORT.get(row["away_team"], row["away_team"])
+            c1,c2,c3,c4,c5 = st.columns([.45,.6,2.0,1.0,2.0])
+            c1.markdown(f"**P{row['number']}**")
+            home_path = team_logo(row["home_team"])
+            if home_path and Path(home_path).exists():
+                c2.image(str(home_path), width=48)
+            c3.markdown(f"**{home}**")
+            c4.markdown(
+                f"<div style='font-size:1.45rem;font-weight:900;text-align:center;color:#06172f;'>"
+                f"{row['home_score']} - {row['away_score']}</div>",
+                unsafe_allow_html=True,
+            )
+            c5.markdown(f"**{away}**")
+
+        if details["survivor_team"]:
+            survivor_name = TEAM_SHORT.get(details["survivor_team"], details["survivor_team"])
+            st.success(f"🛡 **Survivor confirmado:** {survivor_name}")
+        elif not details["survivor_required"]:
+            st.info("🛡 Survivor: ya no era obligatorio porque el participante estaba eliminado.")
+
+        try:
+            receipt, _ = create_player_submission_receipt(user, round_row["id"])
+            st.download_button(
+                "📸 Descargar comprobante de mi quiniela",
+                data=receipt,
+                file_name=f"comprobante_jornada_{details['round_number']}_{str(user['name']).replace(' ','_')}.png",
+                mime="image/png",
+                type="primary",
+                use_container_width=True,
+                key=f"player_receipt_{user['id']}_{round_row['id']}",
+            )
+            st.caption(
+                "Guarda esta imagen como comprobante. Contiene los datos leídos directamente desde Supabase."
+            )
+        except Exception as exc:
+            st.warning(f"La quiniela está confirmada, pero no se pudo preparar la imagen: {exc}")
+    else:
+        missing = details["matches_total"] - details["matches_saved"]
+        message = (
+            f"🔴 **TU ENTREGA TODAVÍA NO ESTÁ CONFIRMADA.** "
+            f"Supabase tiene {details['matches_saved']} de {details['matches_total']} pronósticos."
+        )
+        if details["survivor_required"] and not details["survivor_ok"]:
+            message += " También falta guardar tu Survivor."
+        st.error(message)
+        st.warning(
+            "No cierres la página. Revisa tus datos y vuelve a presionar "
+            "**ENVIAR Y CONFIRMAR QUINIELA**."
+        )
+
+
 def player_view(user):
     logo_data=_data_uri(team_logo(user["team"]))
     st.markdown(f'<div class="profile-card"><img src="{logo_data}" alt="{user["team"]}"><div><div class="name">{user["name"]}</div><div class="sub">Equipo de duelos: {TEAM_SHORT.get(user["team"],user["team"])}</div></div></div>',unsafe_allow_html=True)
@@ -2498,7 +2850,7 @@ def player_view(user):
             survivor_locked = round_locked or now > normalize_datetime(round_row["deadline"])
             survivor_choice=survivor_form_selection(user,round_row,survivor_locked,key_prefix=f"j{round_row['number']}")
             submitted=st.form_submit_button(
-                "Guardar pronósticos disponibles",
+                "✅ ENVIAR Y CONFIRMAR QUINIELA",
                 type="primary",
                 disabled=round_locked or not editable_match_ids,
                 use_container_width=True,
@@ -2520,11 +2872,34 @@ def player_view(user):
                                 ON CONFLICT(user_id,round_id) DO UPDATE SET team=excluded.team,submitted_at=excluded.submitted_at""",
                                 (user["id"],round_row["id"],survivor_choice,stamp))
                     run_write(save)
-                    st.success("Pronósticos disponibles guardados correctamente. Los partidos ya iniciados o con resultado oficial permanecieron sin cambios.")
+
+                    # Verificación independiente: vuelve a LEER Supabase.
+                    verified = player_submission_details(user["id"], round_row["id"])
+                    if verified and verified["complete"]:
+                        st.success(
+                            f"✅ QUINIELA CONFIRMADA. "
+                            f"{verified['matches_saved']}/{verified['matches_total']} pronósticos "
+                            f"fueron verificados directamente en Supabase."
+                        )
+                        st.balloons()
+                    else:
+                        found = verified["matches_saved"] if verified else 0
+                        total = verified["matches_total"] if verified else len(matches)
+                        st.error(
+                            f"🔴 NO SE PUDO CONFIRMAR LA ENTREGA. "
+                            f"Supabase devolvió {found}/{total} pronósticos. "
+                            f"No cierres esta página y vuelve a intentar."
+                        )
                 except sqlite3.IntegrityError:
                     st.error("Ese equipo Survivor ya fue utilizado en otra jornada.")
-                except sqlite3.OperationalError:
-                    st.error("La base estaba ocupada. Espera unos segundos y vuelve a presionar Guardar.")
+                except (sqlite3.OperationalError, psycopg.OperationalError):
+                    st.error(
+                        "No se pudo confirmar la escritura en la base de datos. "
+                        "No cierres esta página y vuelve a presionar ENVIAR Y CONFIRMAR QUINIELA."
+                    )
+        # Siempre muestra el estado REAL almacenado, incluso al volver a entrar.
+        render_player_submission_confirmation(user, round_row)
+
     elif section == "Grupo":
         rounds = cached_fetchall("SELECT * FROM rounds ORDER BY number")
         choices={f"Jornada {r['number']}":r for r in rounds}; round_row=choices[st.selectbox("Pronósticos del grupo",list(choices),key="group_round")]
